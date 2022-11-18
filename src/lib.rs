@@ -59,17 +59,7 @@ impl Parse for FunctionBinding {
                 } else {
                     panic!("only simple idents are supported")
                 };
-                let ty = if let Type::Path(TypePath { path, .. }) = &*ty.ty {
-                    let segments: Vec<_> = path.segments.iter().collect();
-                    if let &[simple] = segments.as_slice() {
-                        simple.ident.clone()
-                    } else {
-                        panic!("only simple types are supported")
-                    }
-                } else {
-                    panic!("only simple types are supported")
-                };
-                (ident, ty)
+                (ident, SupportedTypes::from(&*ty.ty))
             }
         });
 
@@ -79,4 +69,72 @@ impl Parse for FunctionBinding {
             body: Vec::new(),
         })
     }
+}
+
+enum SupportedTypes {
+    Number(Number),
+    Slice(Slice),
+    Str,
+}
+
+impl<'a> From<&'a Type> for SupportedTypes {
+    fn from(ty: &'a Type) -> Self {
+        if let Type::Path(segments) = ty {
+            let segments: Vec<_> = segments.path.segments.iter().collect();
+            if let &[simple] = segments.as_slice() {
+                let as_str = simple.ident.to_string();
+                return SupportedTypes::Number(match as_str.as_str() {
+                    "u8" => Number::U8,
+                    "u16" => Number::U16,
+                    "u32" => Number::U32,
+                    "i8" => Number::I8,
+                    "i16" => Number::I16,
+                    "i32" => Number::I32,
+                    _ => panic!("unsupported type"),
+                });
+            }
+        } else {
+            if let Type::Reference(ty) = ty {
+                if let Type::Slice(slice) = &*ty.elem {
+                    if let Type::Path(segments) = &*slice.elem {
+                        let segments: Vec<_> = segments.path.segments.iter().collect();
+                        if let &[simple] = segments.as_slice() {
+                            let as_str = simple.ident.to_string();
+                            if as_str == "str" {
+                                return SupportedTypes::Str;
+                            }
+                            return SupportedTypes::Slice(match as_str.as_str() {
+                                "u8" => Slice::U8,
+                                "u16" => Slice::U16,
+                                "u32" => Slice::U32,
+                                "i8" => Slice::I8,
+                                "i16" => Slice::I16,
+                                "i32" => Slice::I32,
+                                _ => panic!("unsupported type"),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        panic!("unsupported type")
+    }
+}
+
+enum Slice {
+    U8,
+    U16,
+    U32,
+    I8,
+    I16,
+    I32,
+}
+
+enum Number {
+    U8,
+    U16,
+    U32,
+    I8,
+    I16,
+    I32,
 }
