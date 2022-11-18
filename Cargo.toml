@@ -9,3 +9,7 @@ quote = "1.0"
 
 [lib]
 proc-macro = true
+ux = "0.1.5"
+
+[dev-dependencies]
+ux = "0.1.5"
