@@ -11,8 +11,6 @@ use syn::{
 pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as Bindings);
 
-    // TokenStream::from(quote!(#input))
-    println!("{}", input.js());
     input.as_tokens().into()
 }
 
