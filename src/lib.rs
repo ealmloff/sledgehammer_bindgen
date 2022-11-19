@@ -1,11 +1,10 @@
 use std::collections::HashSet;
 
 use proc_macro::TokenStream;
-use quote::__private::TokenStream as TokenStream2;
+use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
-    parse::{Parse, ParseStream},
-    parse_macro_input, Expr, GenericArgument, Ident, Lit, Pat, PathArguments, Type,
+    parse::Parse, parse_macro_input, Expr, GenericArgument, Ident, Lit, Pat, PathArguments, Type,
 };
 
 #[proc_macro_attribute]
@@ -18,27 +17,38 @@ pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
 #[derive(Debug)]
 struct Bindings {
     functions: Vec<FunctionBinding>,
+    intialize: Option<FunctionBinding>,
 }
 
 impl Parse for Bindings {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let extren_block = syn::ItemForeignMod::parse(input)?;
 
-        let functions = extren_block
-            .items
-            .into_iter()
-            .map(|item| match item {
-                syn::ForeignItem::Verbatim(s) => syn::parse2(s).unwrap(),
+        let mut functions = Vec::new();
+        let mut intialize = None;
+        for item in extren_block.items {
+            match item {
+                syn::ForeignItem::Verbatim(s) => {
+                    let f: FunctionBinding = syn::parse2(s).unwrap();
+                    if f.name == "initialize" {
+                        intialize = Some(f);
+                    } else {
+                        functions.push(f);
+                    }
+                }
                 _ => panic!("only functions are supported"),
-            })
-            .collect();
+            }
+        }
 
-        Ok(Bindings { functions })
+        Ok(Bindings {
+            functions,
+            intialize,
+        })
     }
 }
 
 fn function_discriminant_size_bits(function_count: u32) -> usize {
-    let len = function_count as u32;
+    let len = function_count as u32 + 1;
     let bit_size = (32 - len.next_power_of_two().leading_zeros() as usize).saturating_sub(1);
     match bit_size {
         0..=4 => 4,
@@ -54,19 +64,23 @@ fn with_n_1_bits(n: usize) -> u32 {
 fn select_bits_js(input: &str, pos: usize, len: usize) -> String {
     if len == 32 {
         assert!(pos == 0);
-        return input.to_string();
     }
-    assert!(len < 32);
+    assert!(len <= 32);
     let mut s = String::new();
 
     if pos != 0 {
-        s += &format!("({} >>> {})", input, pos);
+        s += &format!("{}>>>{}", input, pos);
     } else {
         s += input;
     }
 
-    let num = with_n_1_bits(len);
-    s += &format!(" & {}", num);
+    if pos + len < 32 {
+        if pos == 0 {
+            s += &format!("&{}", with_n_1_bits(len));
+        } else {
+            s = format!("({})&{}", s, with_n_1_bits(len));
+        }
+    }
 
     s
 }
@@ -74,13 +88,7 @@ fn select_bits_js(input: &str, pos: usize, len: usize) -> String {
 impl Bindings {
     fn js(&mut self) -> String {
         let op_size = function_discriminant_size_bits(self.functions.len() as u32);
-        let initialize = self
-            .functions
-            .iter_mut()
-            .filter(|f| f.name == "initialize")
-            .map(|f| f.js())
-            .next()
-            .unwrap_or_default();
+        let initialize = self.intialize.as_mut().map(|f| f.js()).unwrap_or_default();
         let start = format!(
             r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}export function create(r){{d=r;c=new TextDecoder}}export function update_memory(r){{m=new DataView(r.buffer)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while(sp<e){{t=m.getUint32(sp,true);s+=String.fromCharCode(t>>24,(t&16711680)>>16,(t&65280)>>8,t&255);sp+=4}}switch(lss+sl-sp){{case 3:t=m.getUint32(sp,true);s+=String.fromCharCode(t>>24,(t&16711680)>>16,(t&65280)>>8);break;case 2:t=m.getUint16(sp,true);s+=String.fromCharCode(t>>8,t&255);break;case 1:s+=String.fromCharCode(m.getUint8(sp),true);break;case 0:break}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;{}}}}}function exOp(){{switch (op & {}) {{"#,
             self.variables_js(),
@@ -95,17 +103,13 @@ impl Bindings {
             .fold(start, |s, (i, f)| {
                 s + &format!("case {}:{}break;", i, f.js())
             })
-            + &format!(
-                "case {}:return true;}}
-            }}",
-                self.functions.len()
-            )
+            + &format!("case {}:return true;}}}}", self.functions.len())
     }
 
     fn read_operations_js(&self) -> String {
         let mut s = String::new();
         let size = function_discriminant_size_bits(self.functions.len() as u32);
-        assert!(size < 8);
+        assert!(size <= 8);
         if size == 0 {
             s += "if(exOp()) return;";
         } else {
@@ -144,6 +148,8 @@ impl Bindings {
             static mut STR_PTR: *mut *const u8 = unsafe { DATA.as_mut_ptr().add(5).cast() };
             #[used]
             static mut STR_LEN_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(9).cast() };
+            #[used]
+            static mut LAST_MEM_SIZE: usize = 0;
             #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
             extern "C" {
                 fn create(metadata_ptr: usize);
@@ -161,6 +167,7 @@ impl Bindings {
             .enumerate()
             .map(|(i, f)| f.to_tokens(i as u8));
         let end_msg = self.functions.len() as u8;
+        let no_op = self.functions.len() as u8 + 1;
         let size = function_discriminant_size_bits(self.functions.len() as u32);
         let reads_per_u32 = (32 + (size - 1)) / size;
         let encode_op = match size {
@@ -179,7 +186,7 @@ impl Bindings {
             8 => {
                 quote! {
                     *self.msg.as_mut_ptr()
-                            .add(self.current_op_batch_idx + self.current_op_byte_idx/2) = op;
+                            .add(self.current_op_batch_idx + self.current_op_byte_idx) = op;
                     self.current_op_byte_idx += 1;
                 }
             }
@@ -191,23 +198,33 @@ impl Bindings {
                 str_buffer: Vec<u8>,
                 current_op_batch_idx: usize,
                 current_op_byte_idx: usize,
-                last_mem_size: usize,
             }
 
             impl Default for Channel {
                 fn default() -> Self {
-                    create(unsafe { DATA.as_mut_ptr() as usize });
                     Self {
                         msg: Vec::new(),
                         str_buffer: Vec::new(),
                         current_op_batch_idx: 0,
                         current_op_byte_idx: #reads_per_u32,
-                        last_mem_size: 0,
                     }
                 }
             }
 
             impl Channel {
+                fn append(&mut self, mut batch: Self) {
+                    // add empty operations to the batch to make sure the batch is aligned
+                    let operations_left = #reads_per_u32 - self.current_op_byte_idx;
+                    for _ in 0..operations_left {
+                        self.encode_op(#no_op);
+                    }
+
+                    self.current_op_byte_idx = batch.current_op_byte_idx;
+                    self.current_op_batch_idx = self.msg.len() + batch.current_op_batch_idx;
+                    self.str_buffer.extend_from_slice(&batch.str_buffer);
+                    self.msg.append(&mut batch.msg);
+                }
+
                 #[allow(clippy::uninit_vec)]
                 fn encode_op(&mut self, op: u8) {
                     unsafe{
@@ -230,6 +247,7 @@ impl Bindings {
                     if unsafe { *METADATA } == 255 {
                         // this is the first message, so we need to encode all the metadata
                         unsafe {
+                            create(DATA.as_mut_ptr() as usize);
                             *DATA_PTR = msg_ptr;
                             *STR_PTR = str_ptr;
                             *METADATA = 3;
@@ -267,10 +285,12 @@ impl Bindings {
                         }
                     }
                     let new_mem_size = core::arch::wasm32::memory_size(0);
-                    // we need to update the memory if the memory has grown
-                    if new_mem_size != self.last_mem_size {
-                        self.last_mem_size = new_mem_size;
-                        update_memory(wasm_bindgen::memory());
+                    unsafe{
+                        // we need to update the memory if the memory has grown
+                        if new_mem_size != LAST_MEM_SIZE {
+                            LAST_MEM_SIZE = new_mem_size;
+                            update_memory(wasm_bindgen::memory());
+                        }
                     }
 
                     run();
@@ -288,6 +308,7 @@ struct FunctionBinding {
     args: Vec<(Ident, SupportedTypes)>,
     body: String,
     bins: Vec<Bin<(Ident, SupportedTypes)>>,
+    remaining: Vec<(Ident, SupportedTypes)>,
 }
 
 impl FunctionBinding {
@@ -295,16 +316,18 @@ impl FunctionBinding {
         let (bins, remaining) = pack(self.args.as_slice(), 4);
 
         self.bins = bins;
-
-        if !remaining.is_empty() {
-            todo!("unsized types");
-        }
+        self.remaining = remaining;
 
         let mut s = String::new();
 
         for b in &self.bins {
-            s += "i = m.getUint32(p, true);";
+            s += "i=m.getUint32(p,true);";
             s += &b.js();
+        }
+
+        for (name, ty) in &self.remaining {
+            s += "i=m.getUint32(p,true);";
+            s += &ty.js(name.to_string(), 0);
         }
 
         s += &self.body;
@@ -320,12 +343,9 @@ impl FunctionBinding {
             .bins
             .iter()
             .flat_map(|bin| bin.filled.iter().map(|entry| &entry.item))
+            .chain(self.remaining.iter())
             .map(|(i, t)| t.encode(i));
-        let size = self
-            .args
-            .iter()
-            .try_fold(0, |sum, (_, t)| t.size().map(|s| sum + s))
-            .expect("todo unsized types");
+        let size: usize = self.args.iter().map(|(_, t)| t.min_size()).sum();
         quote! {
             #[allow(clippy::uninit_vec)]
             pub fn #name(&mut self, #(#args: #types),*) {
@@ -377,6 +397,7 @@ impl Parse for FunctionBinding {
             args,
             body,
             bins: Vec::new(),
+            remaining: Vec::new(),
         })
     }
 }
@@ -389,17 +410,24 @@ enum SupportedTypes {
 }
 
 impl SupportedTypes {
-    fn size(&self) -> Option<usize> {
+    fn sized(&self) -> bool {
         match self {
-            SupportedTypes::Optional(t) => t.size().map(|i| i + 1),
-            SupportedTypes::SimpleTypes(t) => t.size(),
+            SupportedTypes::Optional(t) => t.sized(),
+            SupportedTypes::SimpleTypes(t) => t.sized(),
         }
     }
 
-    fn js(&self, pos: usize) -> String {
+    fn min_size(&self) -> usize {
+        match self {
+            SupportedTypes::Optional(t) => t.min_size() + 1,
+            SupportedTypes::SimpleTypes(t) => t.min_size(),
+        }
+    }
+
+    fn js(&self, parameter: String, pos: usize) -> String {
         match self {
             SupportedTypes::Optional(_) => todo!(),
-            SupportedTypes::SimpleTypes(t) => t.js(pos),
+            SupportedTypes::SimpleTypes(t) => t.js(parameter, pos),
         }
     }
 
@@ -429,26 +457,35 @@ impl SupportedTypes {
 enum SimpleTypes {
     Number(Number),
     Slice(Slice),
-    Str { len_byte_size: u8 },
+    Str { size_type: Number },
 }
 
 impl SimpleTypes {
-    fn size(&self) -> Option<usize> {
+    fn sized(&self) -> bool {
         match self {
-            SimpleTypes::Number(n) => Some(n.size()),
-            SimpleTypes::Slice(_) => None,
-            SimpleTypes::Str { len_byte_size } => Some(*len_byte_size as usize),
+            SimpleTypes::Number(_) => true,
+            SimpleTypes::Slice(_) => false,
+            SimpleTypes::Str { .. } => true,
         }
     }
 
-    fn js(&self, pos: usize) -> String {
+    fn min_size(&self) -> usize {
         match self {
-            SimpleTypes::Number(n) => n.js(pos),
-            SimpleTypes::Slice(s) => s.js(pos),
-            SimpleTypes::Str { len_byte_size } => {
+            SimpleTypes::Number(n) => n.size(),
+            SimpleTypes::Slice(s) => s.len_size_bytes(),
+            SimpleTypes::Str { size_type } => size_type.size(),
+        }
+    }
+
+    fn js(&self, parameter: String, pos: usize) -> String {
+        match self {
+            SimpleTypes::Number(n) => n.js(parameter, pos),
+            SimpleTypes::Slice(s) => s.js(parameter, pos),
+            SimpleTypes::Str { size_type } => {
                 format!(
-                    "s.substring(sp, sp += {})",
-                    select_bits_js("i", pos, *len_byte_size as usize * 8)
+                    "{}=s.substring(sp, sp += {});",
+                    parameter,
+                    size_type.js_get(pos)
                 )
             }
         }
@@ -466,23 +503,24 @@ impl SimpleTypes {
         match self {
             SimpleTypes::Number(n) => n.encode(name),
             SimpleTypes::Slice(s) => s.encode(name),
-            SimpleTypes::Str { len_byte_size } => {
-                let len_byte_size = *len_byte_size as usize;
+            SimpleTypes::Str { size_type } => {
+                let len_byte_size = size_type.size();
+                let len = Ident::new("len", Span::call_site());
+                let write_len = size_type.encode_write(&len);
                 quote! {
-                    let len = #name.len();
-                    // *self.msg.as_mut_ptr().add(self.msg.len()).cast() = len << ((4-#len_byte_size)*8);
-                    *self.msg.as_mut_ptr().add(self.msg.len()).cast() = len as u8;
+                    let #len = #name.len();
+                    #write_len
                     self.msg.set_len(self.msg.len() + #len_byte_size);
-                    self.str_buffer.reserve(len);
+                    self.str_buffer.reserve(#len);
                     let old_len = self.str_buffer.len();
                     unsafe {
                         let ptr = self.str_buffer.as_mut_ptr();
                         let bytes = #name.as_bytes();
                         let str_ptr = bytes.as_ptr();
-                        for o in 0..len {
+                        for o in 0..#len {
                             *ptr.add(old_len + o) = *str_ptr.add(o);
                         }
-                        self.str_buffer.set_len(old_len + len);
+                        self.str_buffer.set_len(old_len + #len);
                     }
                 }
             }
@@ -512,18 +550,23 @@ impl<'a> From<&'a Type> for SupportedTypes {
                     if as_str == "str" {
                         if let PathArguments::AngleBracketed(gen) = &simple.arguments {
                             let generics: Vec<_> = gen.args.iter().collect();
-                            if let &[GenericArgument::Const(syn::Expr::Lit(lit))] =
-                                generics.as_slice()
-                            {
-                                if let syn::Lit::Int(size) = &lit.lit {
+                            if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
+                                let segments: Vec<_> = t.path.segments.iter().collect();
+                                if let &[simple] = segments.as_slice() {
                                     return SupportedTypes::SimpleTypes(SimpleTypes::Str {
-                                        len_byte_size: size.base10_parse::<u8>().unwrap(),
+                                        size_type: match simple.ident.to_string().as_str() {
+                                            "u8" => Number::U8,
+                                            "u16" => Number::U16,
+                                            "u24" => Number::U24,
+                                            "u32" => Number::U32,
+                                            _ => panic!("unsupported type"),
+                                        },
                                     });
                                 }
                             }
                         } else {
                             return SupportedTypes::SimpleTypes(SimpleTypes::Str {
-                                len_byte_size: 4,
+                                size_type: Number::U32,
                             });
                         }
                     }
@@ -536,30 +579,38 @@ impl<'a> From<&'a Type> for SupportedTypes {
                         let as_str = simple.ident.to_string();
                         if let PathArguments::AngleBracketed(gen) = &simple.arguments {
                             let generics: Vec<_> = gen.args.iter().collect();
-                            if let &[GenericArgument::Const(syn::Expr::Lit(lit))] =
-                                generics.as_slice()
-                            {
-                                if let syn::Lit::Int(size) = &lit.lit {
-                                    let size = size.base10_parse::<u8>().unwrap();
+                            if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
+                                let segments: Vec<_> = t.path.segments.iter().collect();
+                                if let &[simple] = segments.as_slice() {
+                                    let size = match simple.ident.to_string().as_str() {
+                                        "u8" => Number::U8,
+                                        "u16" => Number::U16,
+                                        "u32" => Number::U32,
+                                        _ => panic!("unsupported type"),
+                                    };
                                     return SupportedTypes::SimpleTypes(SimpleTypes::Slice(
-                                        match as_str.as_str() {
-                                            "u8" => Slice::U8(size),
-                                            "u16" => Slice::U16(size),
-                                            "u32" => Slice::U32(size),
-                                            _ => panic!("unsupported type"),
+                                        Slice {
+                                            size,
+                                            inner: match as_str.as_str() {
+                                                "u8" => Number::U8,
+                                                "u16" => Number::U16,
+                                                "u32" => Number::U32,
+                                                _ => panic!("unsupported type"),
+                                            },
                                         },
                                     ));
                                 }
                             }
                         } else {
-                            return SupportedTypes::SimpleTypes(SimpleTypes::Slice(
-                                match as_str.as_str() {
-                                    "u8" => Slice::U8(4),
-                                    "u16" => Slice::U16(4),
-                                    "u32" => Slice::U32(4),
+                            return SupportedTypes::SimpleTypes(SimpleTypes::Slice(Slice {
+                                size: Number::U32,
+                                inner: match as_str.as_str() {
+                                    "u8" => Number::U8,
+                                    "u16" => Number::U16,
+                                    "u32" => Number::U32,
                                     _ => panic!("unsupported type"),
                                 },
-                            ));
+                            }));
                         }
                     }
                 }
@@ -570,43 +621,67 @@ impl<'a> From<&'a Type> for SupportedTypes {
 }
 
 #[derive(Debug, Clone)]
-enum Slice {
-    U8(u8),
-    U16(u8),
-    U32(u8),
+struct Slice {
+    size: Number,
+    inner: Number,
 }
 
 impl Slice {
-    fn len_size(&self) -> usize {
-        match self {
-            Slice::U8(size) | Slice::U16(size) | Slice::U32(size) => *size as usize,
-        }
+    fn len_size_bytes(&self) -> usize {
+        self.size.size()
     }
 
     // the position must be up to date before calling this
-    fn js(&self, pos: usize) -> String {
-        let read = select_bits_js("i", pos, self.len_size() * 8);
-        match self {
-            Slice::U8(_) => format!("new Uint8Array(m.buffer, p, {})", read),
-            Slice::U16(_) => format!("new Uint16Array(m.buffer, p, {})", read),
-            Slice::U32(_) => format!("new Uint32Array(m.buffer, p, {})", read),
+    fn js(&self, parameter: String, pos: usize) -> String {
+        let size_bytes = self.len_size_bytes();
+        let read = select_bits_js("i", pos, size_bytes * 8);
+        match self.inner {
+            Number::U8 => format!(
+                "p+={};{}=new Uint8Array(m.buffer, p, {});p+={};",
+                size_bytes, parameter, read, read
+            ),
+            Number::U16 => format!(
+                "p+={};{}=new Uint16Array(m.buffer, p, {});p+={};",
+                size_bytes, parameter, read, read
+            ),
+            Number::U32 => format!(
+                "p+={};{}=new Uint32Array(m.buffer, p, {});p+={};",
+                size_bytes, parameter, read, read
+            ),
+            _ => todo!(),
         }
     }
 
     fn to_tokens(&self) -> TokenStream2 {
-        match self {
-            Slice::U8(_) => quote! { &[u8] },
-            Slice::U16(_) => quote! { &[u16] },
-            Slice::U32(_) => quote! { &[u32] },
+        if self.inner != Number::U8 {
+            todo!("fix alignment issues");
         }
+        let inner = self.inner.to_tokens();
+        quote! { &[#inner] }
     }
 
-    fn encode(&self, _: &Ident) -> TokenStream2 {
-        todo!()
+    fn encode(&self, name: &Ident) -> TokenStream2 {
+        let len = Ident::new("len", Span::call_site());
+        let encode_len = self.size.encode(&len);
+        let ty = self.inner.to_tokens();
+        quote! {
+            let #len = #name.len();
+            #encode_len
+            self.msg.reserve(#len);
+            let msg_ptr = self.msg.as_mut_ptr();
+            let slice_ptr = #name.as_ptr();
+            let old_len = self.msg.len();
+            unsafe{
+                for i in 0..#len {
+                    *msg_ptr.add(old_len).cast::<#ty>().add(i) = *slice_ptr.add(i);
+                }
+            }
+            self.msg.set_len(old_len + #len);
+        }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Number {
     U8,
     U16,
@@ -624,7 +699,11 @@ impl Number {
         }
     }
 
-    fn js(&self, pos: usize) -> String {
+    fn js(&self, parameter: String, pos: usize) -> String {
+        format!("{}={};", parameter, self.js_get(pos))
+    }
+
+    fn js_get(&self, pos: usize) -> String {
         match self {
             Number::U8 => select_bits_js("i", pos, 8),
             Number::U16 => select_bits_js("i", pos, 16),
@@ -644,16 +723,22 @@ impl Number {
 
     fn encode(&self, name: &Ident) -> TokenStream2 {
         let len_byte_size = self.size() as usize;
+        let encode_write = self.encode_write(name);
+        quote! {
+            #encode_write
+            self.msg.set_len(self.msg.len() + #len_byte_size);
+        }
+    }
+
+    fn encode_write(&self, name: &Ident) -> TokenStream2 {
         if let Number::U24 = self {
             quote! {
-                let as_u32 = u32::from(#name) << 8u32;
+                let as_u32 = u32::from(#name);
                 *self.msg.as_mut_ptr().add(self.msg.len()).cast() = as_u32;
-                self.msg.set_len(self.msg.len() + #len_byte_size);
             }
         } else {
             quote! {
                 *self.msg.as_mut_ptr().add(self.msg.len()).cast() = #name;
-                self.msg.set_len(self.msg.len() + #len_byte_size);
             }
         }
     }
@@ -710,13 +795,11 @@ impl Bin<(Ident, SupportedTypes)> {
         //     .collect();
         // js += &values.join(",");
         for entry in &self.filled {
-            js += &format!(
-                "{} = {};",
-                entry.item.0,
-                entry.item.1.js(entry.position * 8)
-            );
+            js += &entry
+                .item
+                .1
+                .js(entry.item.0.to_string(), entry.position * 8);
         }
-        js += ";";
 
         js
     }
@@ -735,11 +818,11 @@ trait Item {
 
 impl Item for (Ident, SupportedTypes) {
     fn sized(&self) -> bool {
-        self.1.size().is_some()
+        self.1.sized()
     }
 
     fn size(&self) -> usize {
-        self.1.size().expect("unsized item")
+        self.1.min_size()
     }
 }
 
