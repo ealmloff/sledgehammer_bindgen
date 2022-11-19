@@ -4,8 +4,8 @@ use ux::*;
 fn main() {
     #[bindgen]
     extern "C" {
-        fn initialize(nodes: u8) {
-            "nodes = [document.getElementById(\"main\")];"
+        fn initialize() {
+            "let nodes = [document.getElementById(\"main\")];"
         }
         fn set_attribute(id: u24, name: &str<1>, value: &str<2>) -> i32 {
             "nodes[id].setAttribute(name, value);"
@@ -48,8 +48,9 @@ fn main() {
         }
     }
     let mut channel = Channel::default();
-    channel.initialize(0);
     channel.create_element(1u8.into(), "div");
+    channel.create_element_ns(2u8.into(), "svg", "http://www.w3.org/2000/svg");
     channel.append_child(0u8.into(), 1u8.into());
+    channel.append_child(1u8.into(), 2u8.into());
     channel.flush();
 }

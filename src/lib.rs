@@ -4,7 +4,8 @@ use proc_macro::TokenStream;
 use quote::__private::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    parse::Parse, parse_macro_input, Expr, GenericArgument, Ident, Lit, Pat, PathArguments, Type,
+    parse::{Parse, ParseStream},
+    parse_macro_input, Expr, GenericArgument, Ident, Lit, Pat, PathArguments, Type,
 };
 
 #[proc_macro_attribute]
@@ -34,19 +35,6 @@ impl Parse for Bindings {
 
         Ok(Bindings { functions })
     }
-}
-
-#[test]
-fn test() {
-    assert_eq!(function_discriminant_size_bits(1), 0);
-    assert_eq!(function_discriminant_size_bits(2), 1);
-    assert_eq!(function_discriminant_size_bits(3), 2);
-    assert_eq!(function_discriminant_size_bits(4), 2);
-    assert_eq!(function_discriminant_size_bits(5), 3);
-    assert_eq!(function_discriminant_size_bits(6), 3);
-    assert_eq!(function_discriminant_size_bits(7), 3);
-    assert_eq!(function_discriminant_size_bits(8), 3);
-    assert_eq!(function_discriminant_size_bits(9), 4);
 }
 
 fn function_discriminant_size_bits(function_count: u32) -> usize {
@@ -86,9 +74,17 @@ fn select_bits_js(input: &str, pos: usize, len: usize) -> String {
 impl Bindings {
     fn js(&mut self) -> String {
         let op_size = function_discriminant_size_bits(self.functions.len() as u32);
+        let initialize = self
+            .functions
+            .iter_mut()
+            .filter(|f| f.name == "initialize")
+            .map(|f| f.js())
+            .next()
+            .unwrap_or_default();
         let start = format!(
             r#"
 let m, p, ls, lss, sp, d, t, c, s, sl, op, i, e, {};
+{}
 export function create(_d) {{
     d = _d;
     c = new TextDecoder();
@@ -148,12 +144,14 @@ function exOp(){{
     switch (op & {}) {{
 "#,
             self.variables_js(),
+            initialize,
             self.read_operations_js(),
             with_n_1_bits(op_size)
         );
         self.functions
             .iter_mut()
             .enumerate()
+            .filter(|f| f.1.name != "initialize")
             .fold(start, |s, (i, f)| {
                 s + &format!("case {}:{}break;", i, f.js())
             })
