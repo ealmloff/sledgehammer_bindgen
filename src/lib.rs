@@ -193,7 +193,7 @@ impl Bindings {
             _ => panic!("unsupported size"),
         };
         quote! {
-            struct Channel {
+            pub struct Channel {
                 msg: Vec<u8>,
                 str_buffer: Vec<u8>,
                 current_op_batch_idx: usize,
@@ -212,7 +212,7 @@ impl Bindings {
             }
 
             impl Channel {
-                fn append(&mut self, mut batch: Self) {
+                pub fn append(&mut self, mut batch: Self) {
                     // add empty operations to the batch to make sure the batch is aligned
                     let operations_left = #reads_per_u32 - self.current_op_byte_idx;
                     for _ in 0..operations_left {
