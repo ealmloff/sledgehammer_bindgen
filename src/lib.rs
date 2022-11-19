@@ -82,67 +82,7 @@ impl Bindings {
             .next()
             .unwrap_or_default();
         let start = format!(
-            r#"
-let m, p, ls, lss, sp, d, t, c, s, sl, op, i, e, {};
-{}
-export function create(_d) {{
-    d = _d;
-    c = new TextDecoder();
-}}
-export function update_memory(_m) {{
-    m = new DataView(_m.buffer);
-}}
-export function run() {{
-    t = m.getUint8(d, true);
-    if (t & 0x01){{
-        ls = m.getUint32(d + 1, true);
-    }}
-    p = ls;
-    if (t & 0x02){{
-        lss = m.getUint32(d + 5, true);
-    }}
-    if (t & 0x04){{
-        sl = m.getUint32(d + 9, true);
-        if (t & 0x08) {{
-            sp = lss;
-            s = "";
-            e = sp + ((sl / 4) | 0) * 4;
-            while (sp < e) {{
-                t = m.getUint32(sp, true);
-                s += String.fromCharCode(t >> 24, (t & 0x00FF0000) >> 16, (t & 0x0000FF00) >> 8, (t & 0x000000FF));
-                sp += 4;
-            }}
-            switch (lss + sl - sp) {{
-                case 3:
-                    t = m.getUint32(sp, true);
-                    s += String.fromCharCode(t >> 24, (t & 0x00FF0000) >> 16, (t & 0x0000FF00) >> 8);
-                    break;
-                case 2:
-                    t = m.getUint16(sp, true);
-                    s += String.fromCharCode(t >> 8, t & 0xFF);
-                    break;
-                case 1:
-                    s += String.fromCharCode(m.getUint8(sp), true);
-                    break;
-                case 0:
-                    break;
-            }}
-        }}
-        else {{
-            s = c.decode(new DataView(m.buffer, lss, sl));
-        }}
-        sp = 0;
-    }}
-    for (; ;) {{
-        op = m.getUint32(p, true);
-        p += 4;
-        {}
-    }}
-}}
-
-function exOp(){{
-    switch (op & {}) {{
-"#,
+            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}export function create(r){{d=r;c=new TextDecoder}}export function update_memory(r){{m=new DataView(r.buffer)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while(sp<e){{t=m.getUint32(sp,true);s+=String.fromCharCode(t>>24,(t&16711680)>>16,(t&65280)>>8,t&255);sp+=4}}switch(lss+sl-sp){{case 3:t=m.getUint32(sp,true);s+=String.fromCharCode(t>>24,(t&16711680)>>16,(t&65280)>>8);break;case 2:t=m.getUint16(sp,true);s+=String.fromCharCode(t>>8,t&255);break;case 1:s+=String.fromCharCode(m.getUint8(sp),true);break;case 0:break}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;{}}}}}function exOp(){{switch (op & {}) {{"#,
             self.variables_js(),
             initialize,
             self.read_operations_js(),
