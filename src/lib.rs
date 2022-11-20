@@ -157,6 +157,7 @@ impl Bindings {
                 fn update_memory(memory: wasm_bindgen::JsValue);
             }
             #channel
+            const GENERATED_JS: &str = #all_js;
         }
     }
 
