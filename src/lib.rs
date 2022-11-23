@@ -458,7 +458,7 @@ impl SupportedTypes {
 enum SimpleTypes {
     Number(Number),
     Slice(Slice),
-    Str { size_type: Number },
+    Str(Str),
 }
 
 impl SimpleTypes {
@@ -474,7 +474,7 @@ impl SimpleTypes {
         match self {
             SimpleTypes::Number(n) => n.size(),
             SimpleTypes::Slice(s) => s.len_size_bytes(),
-            SimpleTypes::Str { size_type } => size_type.size(),
+            SimpleTypes::Str(s) => s.min_size(),
         }
     }
 
@@ -482,13 +482,7 @@ impl SimpleTypes {
         match self {
             SimpleTypes::Number(n) => n.js(parameter, pos),
             SimpleTypes::Slice(s) => s.js(parameter, pos),
-            SimpleTypes::Str { size_type } => {
-                format!(
-                    "{}=s.substring(sp, sp += {});",
-                    parameter,
-                    size_type.js_get(pos)
-                )
-            }
+            SimpleTypes::Str(s) => s.js(parameter, pos),
         }
     }
 
@@ -504,27 +498,7 @@ impl SimpleTypes {
         match self {
             SimpleTypes::Number(n) => n.encode(name),
             SimpleTypes::Slice(s) => s.encode(name),
-            SimpleTypes::Str { size_type } => {
-                let len_byte_size = size_type.size();
-                let len = Ident::new("len", Span::call_site());
-                let write_len = size_type.encode_write(&len);
-                quote! {
-                    let #len = #name.len();
-                    #write_len
-                    self.msg.set_len(self.msg.len() + #len_byte_size);
-                    self.str_buffer.reserve(#len);
-                    let old_len = self.str_buffer.len();
-                    unsafe {
-                        let ptr = self.str_buffer.as_mut_ptr();
-                        let bytes = #name.as_bytes();
-                        let str_ptr = bytes.as_ptr();
-                        for o in 0..#len {
-                            *ptr.add(old_len + o) = *str_ptr.add(o);
-                        }
-                        self.str_buffer.set_len(old_len + #len);
-                    }
-                }
-            }
+            SimpleTypes::Str(s) => s.encode(name),
         }
     }
 }
@@ -554,7 +528,7 @@ impl<'a> From<&'a Type> for SupportedTypes {
                             if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
                                 let segments: Vec<_> = t.path.segments.iter().collect();
                                 if let &[simple] = segments.as_slice() {
-                                    return SupportedTypes::SimpleTypes(SimpleTypes::Str {
+                                    return SupportedTypes::SimpleTypes(SimpleTypes::Str(Str {
                                         size_type: match simple.ident.to_string().as_str() {
                                             "u8" => Number::U8,
                                             "u16" => Number::U16,
@@ -562,13 +536,15 @@ impl<'a> From<&'a Type> for SupportedTypes {
                                             "u32" => Number::U32,
                                             _ => panic!("unsupported type"),
                                         },
-                                    });
+                                        cache_name: None,
+                                    }));
                                 }
                             }
                         } else {
-                            return SupportedTypes::SimpleTypes(SimpleTypes::Str {
+                            return SupportedTypes::SimpleTypes(SimpleTypes::Str(Str {
                                 size_type: Number::U32,
-                            });
+                                cache_name: None,
+                            }));
                         }
                     }
                 }
@@ -740,6 +716,48 @@ impl Number {
         } else {
             quote! {
                 *self.msg.as_mut_ptr().add(self.msg.len()).cast() = #name;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Str {
+    size_type: Number,
+    cache_name: Option<Ident>,
+}
+
+impl Str {
+    fn min_size(&self) -> usize {
+        self.size_type.size()
+    }
+
+    fn js(&self, parameter: String, pos: usize) -> String {
+        format!(
+            "{}=s.substring(sp, sp += {});",
+            parameter,
+            self.size_type.js_get(pos)
+        )
+    }
+
+    fn encode(&self, name: &Ident) -> TokenStream2 {
+        let len_byte_size = self.size_type.size();
+        let len = Ident::new("len", Span::call_site());
+        let write_len = self.size_type.encode_write(&len);
+        quote! {
+            let #len = #name.len();
+            #write_len
+            self.msg.set_len(self.msg.len() + #len_byte_size);
+            self.str_buffer.reserve(#len);
+            let old_len = self.str_buffer.len();
+            unsafe {
+                let ptr = self.str_buffer.as_mut_ptr();
+                let bytes = #name.as_bytes();
+                let str_ptr = bytes.as_ptr();
+                for o in 0..#len {
+                    *ptr.add(old_len + o) = *str_ptr.add(o);
+                }
+                self.str_buffer.set_len(old_len + #len);
             }
         }
     }
