@@ -813,6 +813,22 @@ impl Str {
         let len_byte_size = self.size_type.size();
         let len = Ident::new("len", Span::call_site());
         let write_len = self.size_type.encode_write(&len);
+        let encode = quote! {
+            let #len = #name.len();
+            #write_len
+            self.msg.set_len(self.msg.len() + #len_byte_size);
+            self.str_buffer.reserve(#len);
+            let old_len = self.str_buffer.len();
+            unsafe {
+                let ptr = self.str_buffer.as_mut_ptr();
+                let bytes = #name.as_bytes();
+                let str_ptr = bytes.as_ptr();
+                for o in 0..#len {
+                    *ptr.add(old_len + o) = *str_ptr.add(o);
+                }
+                self.str_buffer.set_len(old_len + #len);
+            }
+        };
         match &self.cache_name {
             Some(cache) => {
                 quote! {
@@ -838,39 +854,11 @@ impl Str {
                             cache_len
                         };
                         self.msg.push(128 | id);
-                        let #len = #name.len();
-                        #write_len
-                        self.msg.set_len(self.msg.len() + #len_byte_size);
-                        self.str_buffer.reserve(#len);
-                        let old_len = self.str_buffer.len();
-                        unsafe {
-                            let ptr = self.str_buffer.as_mut_ptr();
-                            let bytes = #name.as_bytes();
-                            let str_ptr = bytes.as_ptr();
-                            for o in 0..#len {
-                                *ptr.add(old_len + o) = *str_ptr.add(o);
-                            }
-                            self.str_buffer.set_len(old_len + #len);
-                        }
+                        #encode
                     }
                 }
             }
-            None => quote! {
-                let #len = #name.len();
-                #write_len
-                self.msg.set_len(self.msg.len() + #len_byte_size);
-                self.str_buffer.reserve(#len);
-                let old_len = self.str_buffer.len();
-                unsafe {
-                    let ptr = self.str_buffer.as_mut_ptr();
-                    let bytes = #name.as_bytes();
-                    let str_ptr = bytes.as_ptr();
-                    for o in 0..#len {
-                        *ptr.add(old_len + o) = *str_ptr.add(o);
-                    }
-                    self.str_buffer.set_len(old_len + #len);
-                }
-            },
+            None => encode,
         }
     }
 }
