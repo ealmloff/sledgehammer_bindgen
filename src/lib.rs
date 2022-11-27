@@ -89,9 +89,25 @@ impl Bindings {
     fn js(&mut self) -> String {
         let op_size = function_discriminant_size_bits(self.functions.len() as u32);
         let initialize = self.intialize.as_mut().map(|f| f.js()).unwrap_or_default();
+        let cache_names: HashSet<&Ident> = self
+            .functions
+            .iter()
+            .flat_map(|f| {
+                f.args.iter().filter_map(|(_, ty)| match ty {
+                    SupportedTypes::SimpleTypes(SimpleTypes::Str(s)) => s.cache_name.as_ref(),
+                    _ => None,
+                })
+            })
+            .collect();
+        let init_caches = cache_names
+            .iter()
+            .map(|name| format!("const {} = [];", name))
+            .collect::<String>();
+
         let start = format!(
-            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}export function create(r){{d=r;c=new TextDecoder()}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while(sp<e){{t=m.getUint32(sp,true);s+=String.fromCharCode(t>>24,(t&16711680)>>16,(t&65280)>>8,t&255);sp+=4}}switch(lss+sl-sp){{case 3:t=m.getUint32(sp,true);s+=String.fromCharCode(t>>24,(t&16711680)>>16,(t&65280)>>8);break;case 2:t=m.getUint16(sp,true);s+=String.fromCharCode(t>>8,t&255);break;case 1:s+=String.fromCharCode(m.getUint8(sp),true);break;case 0:break}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;{}}}}}function exOp(){{switch (op & {}) {{"#,
+            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}{}export function create(r){{d=r;c=new TextDecoder()}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while(sp<e){{t=m.getUint32(sp,true);s+=String.fromCharCode(t>>24,(t&16711680)>>16,(t&65280)>>8,t&255);sp+=4}}switch(lss+sl-sp){{case 3:t=m.getUint32(sp,true);s+=String.fromCharCode(t>>24,(t&16711680)>>16,(t&65280)>>8);break;case 2:t=m.getUint16(sp,true);s+=String.fromCharCode(t>>8,t&255);break;case 1:s+=String.fromCharCode(m.getUint8(sp),true);break;case 0:break}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;{}}}}}function exOp(){{switch (op & {}) {{"#,
             self.variables_js(),
+            init_caches,
             initialize,
             self.read_operations_js(),
             with_n_1_bits(op_size)
@@ -136,6 +152,29 @@ impl Bindings {
     fn as_tokens(&mut self) -> TokenStream2 {
         let all_js = self.js();
         let channel = self.channel();
+
+        let cache_names: HashSet<&Ident> = self
+            .functions
+            .iter()
+            .flat_map(|f| {
+                f.args.iter().filter_map(|(_, ty)| match ty {
+                    SupportedTypes::SimpleTypes(SimpleTypes::Str(s)) => s.cache_name.as_ref(),
+                    _ => None,
+                })
+            })
+            .collect();
+        let setup = cache_names.iter()
+            .map(|cache| {
+                quote!{
+                    #[allow(non_upper_case_globals)]
+                    static mut #cache: once_cell::sync::Lazy<
+                        lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>,
+                    > = once_cell::sync::Lazy::new(|| {
+                        let build_hasher = std::hash::BuildHasherDefault::<rustc_hash::FxHasher>::default();
+                        lru::LruCache::with_hasher(NonZeroUsize::new(128).unwrap(), build_hasher)
+                    });
+                }
+            });
         quote! {
             // force the data to be packed so that we only need to send one pointer to js
             #[used]
@@ -156,6 +195,7 @@ impl Bindings {
                 fn run();
                 fn update_memory(memory: wasm_bindgen::JsValue);
             }
+            #(#setup)*
             #channel
             const GENERATED_JS: &str = #all_js;
         }
@@ -490,7 +530,7 @@ impl SimpleTypes {
         match self {
             SimpleTypes::Number(n) => n.to_tokens(),
             SimpleTypes::Slice(s) => s.to_tokens(),
-            SimpleTypes::Str { .. } => quote! { &str },
+            SimpleTypes::Str(_) => quote! { &str },
         }
     }
 
@@ -525,9 +565,18 @@ impl<'a> From<&'a Type> for SupportedTypes {
                     if as_str == "str" {
                         if let PathArguments::AngleBracketed(gen) = &simple.arguments {
                             let generics: Vec<_> = gen.args.iter().collect();
-                            if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
+                            if let GenericArgument::Type(Type::Path(t)) = &generics[0] {
                                 let segments: Vec<_> = t.path.segments.iter().collect();
                                 if let &[simple] = segments.as_slice() {
+                                    let mut cache = None;
+                                    if let Some(GenericArgument::Type(Type::Path(t))) =
+                                        &generics.get(1)
+                                    {
+                                        let segments: Vec<_> = t.path.segments.iter().collect();
+                                        if let &[simple] = segments.as_slice() {
+                                            cache = Some(simple.ident.clone());
+                                        }
+                                    }
                                     return SupportedTypes::SimpleTypes(SimpleTypes::Str(Str {
                                         size_type: match simple.ident.to_string().as_str() {
                                             "u8" => Number::U8,
@@ -536,16 +585,15 @@ impl<'a> From<&'a Type> for SupportedTypes {
                                             "u32" => Number::U32,
                                             _ => panic!("unsupported type"),
                                         },
-                                        cache_name: None,
+                                        cache_name: cache,
                                     }));
                                 }
                             }
-                        } else {
-                            return SupportedTypes::SimpleTypes(SimpleTypes::Str(Str {
-                                size_type: Number::U32,
-                                cache_name: None,
-                            }));
                         }
+                        return SupportedTypes::SimpleTypes(SimpleTypes::Str(Str {
+                            size_type: Number::U32,
+                            cache_name: None,
+                        }));
                     }
                 }
             }
@@ -729,36 +777,100 @@ struct Str {
 
 impl Str {
     fn min_size(&self) -> usize {
-        self.size_type.size()
+        self.size_type.size() + usize::from(self.cache_name.is_some())
     }
 
     fn js(&self, parameter: String, pos: usize) -> String {
-        format!(
-            "{}=s.substring(sp, sp += {});",
-            parameter,
-            self.size_type.js_get(pos)
-        )
+        match &self.cache_name {
+            Some(cache) => {
+                let check_cache_hit = format!("(i & {})!=0", 1 << (pos + 7));
+                let cache_hit = select_bits_js("i", pos, 7);
+                let string_len = self.size_type.js_get(pos + 8);
+                format!(
+                    "if({}){{{}=s.substring(sp,sp+={});{}[{}]={};}}else{{{}={}[{}];}}",
+                    check_cache_hit,
+                    parameter,
+                    string_len,
+                    cache,
+                    cache_hit,
+                    parameter,
+                    parameter,
+                    cache,
+                    cache_hit,
+                )
+            }
+            None => {
+                format!(
+                    "{}=s.substring(sp,sp+={});",
+                    parameter,
+                    self.size_type.js_get(pos)
+                )
+            }
+        }
     }
 
     fn encode(&self, name: &Ident) -> TokenStream2 {
         let len_byte_size = self.size_type.size();
         let len = Ident::new("len", Span::call_site());
         let write_len = self.size_type.encode_write(&len);
-        quote! {
-            let #len = #name.len();
-            #write_len
-            self.msg.set_len(self.msg.len() + #len_byte_size);
-            self.str_buffer.reserve(#len);
-            let old_len = self.str_buffer.len();
-            unsafe {
-                let ptr = self.str_buffer.as_mut_ptr();
-                let bytes = #name.as_bytes();
-                let str_ptr = bytes.as_ptr();
-                for o in 0..#len {
-                    *ptr.add(old_len + o) = *str_ptr.add(o);
+        match &self.cache_name {
+            Some(cache) => {
+                quote! {
+                    if let Some(&id) = #cache.get(#name){
+                        self.msg.push(id);
+                        unsafe{
+                            self.msg.reserve(#len_byte_size);
+                            self.msg.set_len(self.msg.len() + #len_byte_size);
+                        }
+                    }
+                    else {
+                        let cache_len = #cache.len() as u8;
+                        let id = if cache_len == 128 {
+                            if let Some((_, id)) = #cache.pop_lru() {
+                                #cache.put(#name.to_string(), id);
+                                id
+                            }
+                            else {
+                                unreachable!()
+                            }
+                        } else {
+                            #cache.put(#name.to_string(), cache_len);
+                            cache_len
+                        };
+                        self.msg.push(128 | id);
+                        let #len = #name.len();
+                        #write_len
+                        self.msg.set_len(self.msg.len() + #len_byte_size);
+                        self.str_buffer.reserve(#len);
+                        let old_len = self.str_buffer.len();
+                        unsafe {
+                            let ptr = self.str_buffer.as_mut_ptr();
+                            let bytes = #name.as_bytes();
+                            let str_ptr = bytes.as_ptr();
+                            for o in 0..#len {
+                                *ptr.add(old_len + o) = *str_ptr.add(o);
+                            }
+                            self.str_buffer.set_len(old_len + #len);
+                        }
+                    }
                 }
-                self.str_buffer.set_len(old_len + #len);
             }
+            None => quote! {
+                let #len = #name.len();
+                #write_len
+                self.msg.set_len(self.msg.len() + #len_byte_size);
+                self.str_buffer.reserve(#len);
+                let old_len = self.str_buffer.len();
+                unsafe {
+                    let ptr = self.str_buffer.as_mut_ptr();
+                    let bytes = #name.as_bytes();
+                    let str_ptr = bytes.as_ptr();
+                    for o in 0..#len {
+                        *ptr.add(old_len + o) = *str_ptr.add(o);
+                    }
+                    self.str_buffer.set_len(old_len + #len);
+                }
+            },
         }
     }
 }
