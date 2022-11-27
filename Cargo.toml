@@ -14,3 +14,6 @@ ux = "0.1.5"
 [dev-dependencies]
 ux = "0.1.5"
 wasm-bindgen = "0.2"
+rustc-hash = "1.1.0"
+once_cell = "1.16.0"
+lru = "0.8.1"

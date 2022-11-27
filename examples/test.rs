@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use sledgehammer_bindgen::bindgen;
 use ux::*;
 
@@ -7,16 +9,21 @@ fn main() {
         fn initialize() {
             "let nodes = [document.getElementById(\"main\")];"
         }
-        fn set_attribute(id: u24, name: &str<u8>, value: &str<u16>) -> i32 {
+        fn set_attribute(id: u24, name: &str<u8, name_cache>, value: &str<u16>) -> i32 {
             "nodes[id].setAttribute(name, value);"
         }
-        fn set_attribute_ns(id: u24, name: &str<u8>, namespace: &str<u8>, value: &str<u16>) {
+        fn set_attribute_ns(
+            id: u24,
+            name: &str<u8, name_cache>,
+            namespace: &str<u8, ns_cache>,
+            value: &str<u16>,
+        ) {
             "nodes[id].setAttributeNS(namespace, name, value);"
         }
-        fn create_element(id: u24, name: &str<u8>) {
+        fn create_element(id: u24, name: &str<u8, name_cache>) {
             "nodes[id]=document.createElement(name);"
         }
-        fn create_element_ns(id: u24, name: &str<u8>, namespace: &str<u8>) {
+        fn create_element_ns(id: u24, name: &str<u8, name_cache>, namespace: &str<u8, ns_cache>) {
             "nodes[id]=document.createElementNS(namespace, name);"
         }
         fn create_text_node(id: u24, text: &str<u16>) {
