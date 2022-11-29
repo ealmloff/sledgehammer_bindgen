@@ -104,41 +104,30 @@ impl Bindings {
             .map(|name| format!("const {} = [];", name))
             .collect::<String>();
 
+        let size = function_discriminant_size_bits(self.functions.len() as u32);
+        assert!(size <= 8);
+        let reads_per_u32 = (32 + (size - 1)) / size;
+
         let start = format!(
-            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}{}export function create(r){{d=r;c=new TextDecoder('utf-8', {{fatal:true}})}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while (sp < e) {{t = m.getUint32(sp, true);s += String.fromCharCode(t & 255, (t & 65280) >> 8, (t & 16711680) >> 16, t >> 24);sp += 4}}while (sp < lss + sl) {{s += String.fromCharCode(m.getUint8(sp++));}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;{}}}}}function exOp(){{switch (op & {}) {{"#,
+            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}{}export function create(r){{d=r;c=new TextDecoder('utf-8', {{fatal:true}})}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while (sp < e) {{t = m.getUint32(sp, true);s += String.fromCharCode(t & 255, (t & 65280) >> 8, (t & 16711680) >> 16, t >> 24);sp += 4}}while (sp < lss + sl) {{s += String.fromCharCode(m.getUint8(sp++));}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;for(let z=0;z<{};z++){{switch (op & {}) {{{}}}}}"#,
             self.variables_js(),
             init_caches,
             initialize,
-            self.read_operations_js(),
+            reads_per_u32,
             with_n_1_bits(op_size),
+            self.functions
+                .iter_mut()
+                .enumerate()
+                .fold(String::new(), |s, (i, f)| {
+                    s + &format!("case {}:{}break;", i, f.js())
+                })
+                + &format!(
+                    "case {}:return true;}}op >>>= {};}}",
+                    self.functions.len(),
+                    op_size
+                ),
         );
-        self.functions
-            .iter_mut()
-            .enumerate()
-            .fold(start, |s, (i, f)| {
-                s + &format!("case {}:{}break;", i, f.js())
-            })
-            + &format!(
-                "case {}:return true;}}op >>>= {};}}",
-                self.functions.len(),
-                op_size
-            )
-    }
-
-    fn read_operations_js(&self) -> String {
-        let mut s = String::new();
-        let size = function_discriminant_size_bits(self.functions.len() as u32);
-        assert!(size <= 8);
-        if size == 0 {
-            s += "if(exOp()) return;";
-        } else {
-            let reads_per_u32 = (32 + (size - 1)) / size;
-
-            for _ in 0..reads_per_u32 {
-                s += "if(exOp()) return;";
-            }
-        }
-        s
+        start
     }
 
     fn variables_js(&self) -> String {
