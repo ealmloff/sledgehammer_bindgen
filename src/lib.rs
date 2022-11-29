@@ -105,21 +105,24 @@ impl Bindings {
             .collect::<String>();
 
         let start = format!(
-            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}{}export function create(r){{d=r;c=new TextDecoder()}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while (sp < e) {{t = m.getUint32(sp, true);s += String.fromCharCode(t & 255, (t & 65280) >> 8, (t & 16711680) >> 16, t >> 24);sp += 4}}while (sp < lss + sl) {{s += String.fromCharCode(m.getUint8(sp++), true);}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;{}}}}}function exOp(){{switch (op & {}) {{"#,
+            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}{}export function create(r){{d=r;c=new TextDecoder('utf-8', {{fatal:true}})}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while (sp < e) {{t = m.getUint32(sp, true);s += String.fromCharCode(t & 255, (t & 65280) >> 8, (t & 16711680) >> 16, t >> 24);sp += 4}}while (sp < lss + sl) {{s += String.fromCharCode(m.getUint8(sp++));}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;{}}}}}function exOp(){{switch (op & {}) {{"#,
             self.variables_js(),
             init_caches,
             initialize,
             self.read_operations_js(),
-            with_n_1_bits(op_size)
+            with_n_1_bits(op_size),
         );
         self.functions
             .iter_mut()
             .enumerate()
-            .filter(|f| f.1.name != "initialize")
             .fold(start, |s, (i, f)| {
                 s + &format!("case {}:{}break;", i, f.js())
             })
-            + &format!("case {}:return true;}}}}", self.functions.len())
+            + &format!(
+                "case {}:return true;}}op >>>= {};}}",
+                self.functions.len(),
+                op_size
+            )
     }
 
     fn read_operations_js(&self) -> String {
@@ -132,7 +135,7 @@ impl Bindings {
             let reads_per_u32 = (32 + (size - 1)) / size;
 
             for _ in 0..reads_per_u32 {
-                s += &format!("if(exOp()) return; op >>>= {};", size);
+                s += "if(exOp()) return;";
             }
         }
         s
@@ -171,7 +174,7 @@ impl Bindings {
                         lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>,
                     > = once_cell::sync::Lazy::new(|| {
                         let build_hasher = std::hash::BuildHasherDefault::<rustc_hash::FxHasher>::default();
-                        lru::LruCache::with_hasher(NonZeroUsize::new(128).unwrap(), build_hasher)
+                        lru::LruCache::with_hasher(std::num::NonZeroUsize::new(128).unwrap(), build_hasher)
                     });
                 }
             });
@@ -291,7 +294,7 @@ impl Bindings {
                             create(DATA.as_mut_ptr() as usize);
                             *DATA_PTR = msg_ptr;
                             *STR_PTR = str_ptr;
-                            *METADATA = 3;
+                            *METADATA = 7;
                         }
                     } else {
                         if unsafe { *DATA_PTR } != msg_ptr {
@@ -335,6 +338,10 @@ impl Bindings {
                     }
 
                     run();
+                    self.current_op_batch_idx = 0;
+                    self.current_op_byte_idx = #reads_per_u32;
+                    self.str_buffer.clear();
+                    self.msg.clear();
                 }
 
                 #(#methods)*
@@ -378,7 +385,7 @@ impl FunctionBinding {
 
     fn to_tokens(&self, index: u8) -> TokenStream2 {
         let name = &self.name;
-        let args = self.args.iter().map(|(a, _)| a);
+        let args: Vec<_> = self.args.iter().map(|(a, _)| a).collect();
         let types = self.args.iter().map(|(_, t)| t.to_tokens());
         let encode_types = self
             .bins
@@ -756,6 +763,7 @@ impl Number {
     }
 
     fn encode_write(&self, name: &Ident) -> TokenStream2 {
+        let ty = self.to_tokens();
         if let Number::U24 = self {
             quote! {
                 let as_u32 = u32::from(#name);
@@ -763,7 +771,7 @@ impl Number {
             }
         } else {
             quote! {
-                *self.msg.as_mut_ptr().add(self.msg.len()).cast() = #name;
+                *self.msg.as_mut_ptr().add(self.msg.len()).cast() = #name as #ty;
             }
         }
     }
@@ -803,28 +811,27 @@ impl Str {
                 format!(
                     "{}=s.substring(sp,sp+={});",
                     parameter,
-                    self.size_type.js_get(pos)
+                    self.size_type.js_get(pos),
                 )
             }
         }
     }
 
     fn encode(&self, name: &Ident) -> TokenStream2 {
-        let len_byte_size = self.size_type.size();
         let len = Ident::new("len", Span::call_site());
-        let write_len = self.size_type.encode_write(&len);
+        let write_len = self.size_type.encode(&len);
+        let len_byte_size = self.size_type.size();
         let encode = quote! {
-            let #len = #name.len();
-            #write_len
-            self.msg.set_len(self.msg.len() + #len_byte_size);
-            self.str_buffer.reserve(#len);
-            let old_len = self.str_buffer.len();
             unsafe {
-                let ptr = self.str_buffer.as_mut_ptr();
+                let #len = #name.len();
+                #write_len
+                let old_len = self.str_buffer.len();
+                self.str_buffer.reserve(#len);
+                let ptr = self.str_buffer.as_mut_ptr().add(old_len);
                 let bytes = #name.as_bytes();
                 let str_ptr = bytes.as_ptr();
                 for o in 0..#len {
-                    *ptr.add(old_len + o) = *str_ptr.add(o);
+                    *ptr.add(o) = *str_ptr.add(o);
                 }
                 self.str_buffer.set_len(old_len + #len);
             }
@@ -833,10 +840,9 @@ impl Str {
             Some(cache) => {
                 quote! {
                     if let Some(&id) = #cache.get(#name){
-                        self.msg.push(id);
+                        *self.msg.as_mut_ptr().add(self.msg.len()) = id;
                         unsafe{
-                            self.msg.reserve(#len_byte_size);
-                            self.msg.set_len(self.msg.len() + #len_byte_size);
+                            self.msg.set_len(self.msg.len() + #len_byte_size + 1);
                         }
                     }
                     else {
@@ -853,7 +859,8 @@ impl Str {
                             #cache.put(#name.to_string(), cache_len);
                             cache_len
                         };
-                        self.msg.push(128 | id);
+                        *self.msg.as_mut_ptr().add(self.msg.len()) = 128 | id;
+                        self.msg.set_len(self.msg.len() + 1);
                         #encode
                     }
                 }
