@@ -61,20 +61,49 @@ fn with_n_1_bits(n: usize) -> u32 {
     (1u64 << n as u64).saturating_sub(1) as u32
 }
 
-fn select_bits_js(input: &str, pos: usize, len: usize) -> String {
-    if len == 32 {
+fn read_size(size: usize, s: &mut String) {
+    match size {
+        3..=4 => s.push_str("m.getUint32(p,true)"),
+        2 => s.push_str("m.getUint16(p,true)"),
+        1..=1 => s.push_str("m.getUint8(p,true)"),
+        _ => panic!("invalid size"),
+    }
+}
+
+struct Read {
+    size: usize,
+    pos: usize,
+}
+
+impl Read {
+    fn new(s: &mut String, len: usize) -> Self {
+        s.push_str("i=");
+        read_size(len, s);
+        s.push(';');
+        Self { size: len, pos: 0 }
+    }
+}
+
+fn select_bits_js(read: &Read, len: usize) -> String {
+    let size = read.size * 8;
+    let pos = read.pos * 8;
+    select_bits_js_inner("i", size, pos, len)
+}
+
+fn select_bits_js_inner(from: &str, size: usize, pos: usize, len: usize) -> String {
+    if len == size {
         assert!(pos == 0);
     }
-    assert!(len <= 32);
+    assert!(len <= size);
     let mut s = String::new();
 
     if pos != 0 {
-        s += &format!("{}>>>{}", input, pos);
+        s += &format!("{}>>>{}", from, pos);
     } else {
-        s += input;
+        s += from;
     }
 
-    if pos + len < 32 {
+    if pos + len < size {
         if pos == 0 {
             s += &format!("&{}", with_n_1_bits(len));
         } else {
@@ -109,7 +138,7 @@ impl Bindings {
         let reads_per_u32 = (32 + (size - 1)) / size;
 
         let start = format!(
-            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,{};{}{}export function create(r){{d=r;c=new TextDecoder('utf-8', {{fatal:true}})}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while (sp < e) {{t = m.getUint32(sp, true);s += String.fromCharCode(t & 255, (t & 65280) >> 8, (t & 16711680) >> 16, t >> 24);sp += 4}}while (sp < lss + sl) {{s += String.fromCharCode(m.getUint8(sp++));}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;for(let z=0;z<{};z++){{switch (op & {}) {{{}}}}}"#,
+            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z,{};{}{}export function create(r){{d=r;c=new TextDecoder('utf-8', {{fatal:true}})}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while (sp < e) {{t = m.getUint32(sp, true);s += String.fromCharCode(t & 255, (t & 65280) >> 8, (t & 16711680) >> 16, t >> 24);sp += 4}}while (sp < lss + sl) {{s += String.fromCharCode(m.getUint8(sp++));}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;z=0;while(z++<{}){{switch (op & {}) {{{}}}}}"#,
             self.variables_js(),
             init_caches,
             initialize,
@@ -145,29 +174,60 @@ impl Bindings {
         let all_js = self.js();
         let channel = self.channel();
 
-        let cache_names: HashSet<&Ident> = self
+        let cache_names: HashSet<(&Ident, bool)> = self
             .functions
             .iter()
             .flat_map(|f| {
                 f.args.iter().filter_map(|(_, ty)| match ty {
-                    SupportedTypes::SimpleTypes(SimpleTypes::Str(s)) => s.cache_name.as_ref(),
+                    SupportedTypes::SimpleTypes(SimpleTypes::Str(s)) => {
+                        s.cache_name.as_ref().map(|n| (n, s.static_str))
+                    }
                     _ => None,
                 })
             })
             .collect();
         let setup = cache_names.iter()
-            .map(|cache| {
-                quote!{
-                    #[allow(non_upper_case_globals)]
-                    static mut #cache: once_cell::sync::Lazy<
-                        lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>,
-                    > = once_cell::sync::Lazy::new(|| {
-                        let build_hasher = std::hash::BuildHasherDefault::<rustc_hash::FxHasher>::default();
-                        lru::LruCache::with_hasher(std::num::NonZeroUsize::new(128).unwrap(), build_hasher)
-                    });
+            .map(|(cache, static_str)| {
+                if *static_str {
+                    quote!{
+                        #[allow(non_upper_case_globals)]
+                        static mut #cache: sledgehammer_utils::ConstLru<*const str, NonHashBuilder, 128> = sledgehammer_utils::ConstLru::new(NonHashBuilder);
+                    }
+                }
+                else{
+                    quote!{
+                        #[allow(non_upper_case_globals)]
+                        static mut #cache: once_cell::sync::Lazy<
+                            lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>,
+                        > = once_cell::sync::Lazy::new(|| {
+                            let build_hasher = std::hash::BuildHasherDefault::<rustc_hash::FxHasher>::default();
+                            lru::LruCache::with_hasher(std::num::NonZeroUsize::new(128).unwrap(), build_hasher)
+                        });
+                    }
                 }
             });
         quote! {
+            struct NonHashBuilder;
+            impl std::hash::BuildHasher for NonHashBuilder {
+                type Hasher = NonHash;
+                fn build_hasher(&self) -> Self::Hasher {
+                    NonHash(0)
+                }
+            }
+            #[allow(unused)]
+            #[derive(Default)]
+            struct NonHash(u64);
+            impl std::hash::Hasher for NonHash {
+                fn finish(&self) -> u64 {
+                    self.0
+                }
+                fn write(&mut self, bytes: &[u8]) {
+                    unreachable!()
+                }
+                fn write_usize(&mut self, i: usize) {
+                    self.0 = i as u64;
+                }
+            }
             // force the data to be packed so that we only need to send one pointer to js
             #[used]
             static mut DATA: [u8; 1 + 4 + 4 + 4] = [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -358,13 +418,12 @@ impl FunctionBinding {
         let mut s = String::new();
 
         for b in &self.bins {
-            s += "i=m.getUint32(p,true);";
             s += &b.js();
         }
 
         for (name, ty) in &self.remaining {
-            s += "i=m.getUint32(p,true);";
-            s += &ty.js(name.to_string(), 0);
+            let mut read = Read::new(&mut s, ty.min_size());
+            s += &ty.js(name.to_string(), &mut read);
         }
 
         s += &self.body;
@@ -461,10 +520,10 @@ impl SupportedTypes {
         }
     }
 
-    fn js(&self, parameter: String, pos: usize) -> String {
+    fn js(&self, parameter: String, read: &mut Read) -> String {
         match self {
             SupportedTypes::Optional(_) => todo!(),
-            SupportedTypes::SimpleTypes(t) => t.js(parameter, pos),
+            SupportedTypes::SimpleTypes(t) => t.js(parameter, read),
         }
     }
 
@@ -514,11 +573,11 @@ impl SimpleTypes {
         }
     }
 
-    fn js(&self, parameter: String, pos: usize) -> String {
+    fn js(&self, parameter: String, read: &mut Read) -> String {
         match self {
-            SimpleTypes::Number(n) => n.js(parameter, pos),
-            SimpleTypes::Slice(s) => s.js(parameter, pos),
-            SimpleTypes::Str(s) => s.js(parameter, pos),
+            SimpleTypes::Number(n) => n.js(parameter, read),
+            SimpleTypes::Slice(s) => s.js(parameter, read),
+            SimpleTypes::Str(s) => s.js(parameter, read),
         }
     }
 
@@ -526,7 +585,7 @@ impl SimpleTypes {
         match self {
             SimpleTypes::Number(n) => n.to_tokens(),
             SimpleTypes::Slice(s) => s.to_tokens(),
-            SimpleTypes::Str(_) => quote! { &str },
+            SimpleTypes::Str(s) => s.to_tokens(),
         }
     }
 
@@ -582,6 +641,11 @@ impl<'a> From<&'a Type> for SupportedTypes {
                                             _ => panic!("unsupported type"),
                                         },
                                         cache_name: cache,
+                                        static_str: ty
+                                            .lifetime
+                                            .as_ref()
+                                            .filter(|l| l.ident == "static")
+                                            .is_some(),
                                     }));
                                 }
                             }
@@ -589,6 +653,11 @@ impl<'a> From<&'a Type> for SupportedTypes {
                         return SupportedTypes::SimpleTypes(SimpleTypes::Str(Str {
                             size_type: Number::U32,
                             cache_name: None,
+                            static_str: ty
+                                .lifetime
+                                .as_ref()
+                                .filter(|l| l.ident == "static")
+                                .is_some(),
                         }));
                     }
                 }
@@ -653,9 +722,10 @@ impl Slice {
     }
 
     // the position must be up to date before calling this
-    fn js(&self, parameter: String, pos: usize) -> String {
+    fn js(&self, parameter: String, reader: &mut Read) -> String {
         let size_bytes = self.len_size_bytes();
-        let read = select_bits_js("i", pos, size_bytes * 8);
+        let read = select_bits_js(reader, size_bytes * 8);
+        reader.pos += size_bytes;
         match self.inner {
             Number::U8 => format!(
                 "p+={};{}=new Uint8Array(m.buffer, p, {});p+={};",
@@ -720,16 +790,33 @@ impl Number {
         }
     }
 
-    fn js(&self, parameter: String, pos: usize) -> String {
-        format!("{}={};", parameter, self.js_get(pos))
+    fn js(&self, parameter: String, read: &mut Read) -> String {
+        let r = format!("{}={};", parameter, self.js_get(read));
+        read.pos += self.size();
+        r
     }
 
-    fn js_get(&self, pos: usize) -> String {
+    fn js_inlined(&self, parameter: String) -> String {
+        format!("{}={};", parameter, self.js_get_inlined())
+    }
+
+    fn js_get_inlined(&self) -> String {
+        let mut read = String::new();
+        read_size(self.size(), &mut read);
         match self {
-            Number::U8 => select_bits_js("i", pos, 8),
-            Number::U16 => select_bits_js("i", pos, 16),
-            Number::U24 => select_bits_js("i", pos, 24),
-            Number::U32 => select_bits_js("i", pos, 32),
+            Number::U8 => select_bits_js_inner(&read, 8, 0, 8),
+            Number::U16 => select_bits_js_inner(&read, 16, 0, 16),
+            Number::U24 => select_bits_js_inner(&read, 32, 0, 24),
+            Number::U32 => select_bits_js_inner(&read, 32, 0, 32),
+        }
+    }
+
+    fn js_get(&self, read: &mut Read) -> String {
+        match self {
+            Number::U8 => select_bits_js(read, 8),
+            Number::U16 => select_bits_js(read, 16),
+            Number::U24 => select_bits_js(read, 24),
+            Number::U32 => select_bits_js(read, 32),
         }
     }
 
@@ -770,19 +857,30 @@ impl Number {
 struct Str {
     size_type: Number,
     cache_name: Option<Ident>,
+    static_str: bool,
 }
 
 impl Str {
+    fn to_tokens(&self) -> TokenStream2 {
+        if self.static_str {
+            quote! { &'static str }
+        } else {
+            quote! { &str }
+        }
+    }
+
     fn min_size(&self) -> usize {
         self.size_type.size() + usize::from(self.cache_name.is_some())
     }
 
-    fn js(&self, parameter: String, pos: usize) -> String {
+    fn js(&self, parameter: String, read: &mut Read) -> String {
         match &self.cache_name {
             Some(cache) => {
-                let check_cache_hit = format!("(i & {})!=0", 1 << (pos + 7));
-                let cache_hit = select_bits_js("i", pos, 7);
-                let string_len = self.size_type.js_get(pos + 8);
+                let check_cache_hit = format!("(i & {})!=0", 1 << (read.pos * 8 + 7));
+                let cache_hit = select_bits_js(read, 7);
+                read.pos += 1;
+                let string_len = self.size_type.js_get(read);
+                read.pos += self.size_type.size();
                 format!(
                     "if({}){{{}=s.substring(sp,sp+={});{}[{}]={};}}else{{{}={}[{}];}}",
                     check_cache_hit,
@@ -797,13 +895,23 @@ impl Str {
                 )
             }
             None => {
-                format!(
+                let s = format!(
                     "{}=s.substring(sp,sp+={});",
                     parameter,
-                    self.size_type.js_get(pos),
-                )
+                    self.size_type.js_get(read),
+                );
+                read.pos += self.min_size();
+                s
             }
         }
+    }
+
+    fn js_inlined(&self, parameter: String) -> String {
+        format!(
+            "{}=s.substring(sp,sp+={});",
+            parameter,
+            self.size_type.js_get_inlined(),
+        )
     }
 
     fn encode(&self, name: &Ident) -> TokenStream2 {
@@ -827,30 +935,47 @@ impl Str {
         };
         match &self.cache_name {
             Some(cache) => {
-                quote! {
-                    if let Some(&id) = #cache.get(#name){
-                        *self.msg.as_mut_ptr().add(self.msg.len()) = id;
-                        unsafe{
-                            self.msg.set_len(self.msg.len() + #len_byte_size + 1);
+                if self.static_str {
+                    quote! {
+                        let (_id, _new) = #cache.push(#name);
+                        if _new {
+                            *self.msg.as_mut_ptr().add(self.msg.len()) = 128 | _id;
+                            self.msg.set_len(self.msg.len() + 1);
+                            #encode
+                        }
+                        else {
+                            *self.msg.as_mut_ptr().add(self.msg.len()) = _id;
+                            unsafe{
+                                self.msg.set_len(self.msg.len() + #len_byte_size + 1);
+                            }
                         }
                     }
-                    else {
-                        let cache_len = #cache.len() as u8;
-                        let id = if cache_len == 128 {
-                            if let Some((_, id)) = #cache.pop_lru() {
-                                #cache.put(#name.to_string(), id);
-                                id
+                } else {
+                    quote! {
+                        if let Some(&id) = #cache.get(#name){
+                            *self.msg.as_mut_ptr().add(self.msg.len()) = id;
+                            unsafe{
+                                self.msg.set_len(self.msg.len() + #len_byte_size + 1);
                             }
-                            else {
-                                unreachable!()
-                            }
-                        } else {
-                            #cache.put(#name.to_string(), cache_len);
-                            cache_len
-                        };
-                        *self.msg.as_mut_ptr().add(self.msg.len()) = 128 | id;
-                        self.msg.set_len(self.msg.len() + 1);
-                        #encode
+                        }
+                        else {
+                            let cache_len = #cache.len() as u8;
+                            let id = if cache_len == 128 {
+                                if let Some((_, id)) = #cache.pop_lru() {
+                                    #cache.put(#name.to_string(), id);
+                                    id
+                                }
+                                else {
+                                    unreachable!()
+                                }
+                            } else {
+                                #cache.put(#name.to_string(), cache_len);
+                                cache_len
+                            };
+                            *self.msg.as_mut_ptr().add(self.msg.len()) = 128 | id;
+                            self.msg.set_len(self.msg.len() + 1);
+                            #encode
+                        }
                     }
                 }
             }
@@ -878,10 +1003,7 @@ impl<I: Item> Bin<I> {
     fn push(&mut self, item: I) {
         let size = item.size();
         assert!(size <= self.remaining);
-        self.filled.push(BinEntry {
-            position: self.position,
-            item,
-        });
+        self.filled.push(BinEntry { item });
         self.remaining -= size;
         self.position += size;
     }
@@ -889,31 +1011,40 @@ impl<I: Item> Bin<I> {
 
 impl Bin<(Ident, SupportedTypes)> {
     fn js(&self) -> String {
+        if let &[BinEntry {
+            item: (name, SupportedTypes::SimpleTypes(SimpleTypes::Number(n))),
+        }] = &self.filled.as_slice()
+        {
+            let mut js = n.js_inlined(name.to_string());
+            // move the pointer forward by the number of bytes read
+            js += "p += ";
+            js += &self.position.to_string();
+            js += ";";
+            return js;
+        } else if let &[BinEntry {
+            item: (name, SupportedTypes::SimpleTypes(SimpleTypes::Str(s))),
+        }] = &self.filled.as_slice()
+        {
+            if !s.static_str {
+                let mut js = s.js_inlined(name.to_string());
+                // move the pointer forward by the number of bytes read
+                js += "p += ";
+                js += &self.position.to_string();
+                js += ";";
+                return js;
+            }
+        }
         let mut js = String::new();
+
+        let mut read = Read::new(&mut js, self.position);
 
         // move the pointer forward by the number of bytes read
         js += "p += ";
         js += &self.position.to_string();
         js += ";";
 
-        // let variables: Vec<_> = self
-        //     .filled
-        //     .iter()
-        //     .map(|entry| format!("{}", entry.item.0))
-        //     .collect();
-        // js += &variables.join(",");
-        // js += "=";
-        // let values: Vec<_> = self
-        //     .filled
-        //     .iter()
-        //     .map(|entry| entry.item.1.js(entry.position * 8))
-        //     .collect();
-        // js += &values.join(",");
         for entry in &self.filled {
-            js += &entry
-                .item
-                .1
-                .js(entry.item.0.to_string(), entry.position * 8);
+            js += &entry.item.1.js(entry.item.0.to_string(), &mut read);
         }
 
         js
@@ -922,7 +1053,6 @@ impl Bin<(Ident, SupportedTypes)> {
 
 #[derive(Debug)]
 struct BinEntry<I: Item> {
-    position: usize,
     item: I,
 }
 
