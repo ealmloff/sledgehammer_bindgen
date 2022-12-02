@@ -191,7 +191,7 @@ impl Bindings {
                 if *static_str {
                     quote!{
                         #[allow(non_upper_case_globals)]
-                        static mut #cache: sledgehammer_utils::ConstLru<*const str, NonHashBuilder, 128> = sledgehammer_utils::ConstLru::new(NonHashBuilder);
+                        static mut #cache: sledgehammer_utils::ConstLru<*const str, NonHashBuilder, 128, 256> = sledgehammer_utils::ConstLru::new(NonHashBuilder);
                     }
                 }
                 else{
