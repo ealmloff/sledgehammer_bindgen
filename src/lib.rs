@@ -649,6 +649,10 @@ impl FunctionBinding {
 
             last_bin.filled = new_last_bin_filled;
         } else {
+            for (segment, param) in &self.body.segments {
+                s += segment;
+                s += param;
+            }
             s += &self.body.trailing;
         }
 
@@ -1343,11 +1347,11 @@ impl Writable {
     }
 
     fn js_get(&self, read: &mut Read) -> String {
-        format!("s.substring(sp,sp+={});", self.size_type.js_get(read))
+        format!("s.substring(sp,sp+={})", self.size_type.js_get(read))
     }
 
     fn js_get_inlined(&self) -> String {
-        format!("s.substring(sp,sp+={});", self.size_type.js_get_inlined())
+        format!("s.substring(sp,sp+={})", self.size_type.js_get_inlined())
     }
 
     fn encode(&self, name: &Ident) -> TokenStream2 {
