@@ -54,8 +54,6 @@ use syn::{
 ///
 ///     // simlar to strings, you can use the &[T<SIZE>] syntax to specify the type that should be used to store the length of the array.
 ///     // valid types are &[u8], &[u16], &[u32].
-///     //
-///     // NOTE: this is efficient for small arrays, but for large arrays it is better to use a typed array through wasm bindgen.
 ///     fn takes_slices(slice1: &[u8], slice2: &[u8<u16>]) {
 ///         "console.log($slice1$, $slice2$);"
 ///     }
@@ -559,8 +557,7 @@ impl FunctionBinding {
 
         let mut s = String::new();
         for (name, ty) in &self.remaining {
-            let mut read = Read::new(&mut s, ty.min_size());
-            s += &ty.js(name.to_string(), &mut read);
+            s += &ty.js_inlined(name.to_string());
         }
         for b in &self.bins[..self.bins.len().saturating_sub(1)] {
             s += &b.js();
@@ -743,10 +740,10 @@ enum SupportedTypes {
 }
 
 impl SupportedTypes {
-    fn sized(&self) -> bool {
+    fn read_from_u32(&self) -> bool {
         match self {
-            SupportedTypes::Optional(t) => t.sized(),
-            SupportedTypes::SimpleTypes(t) => t.sized(),
+            SupportedTypes::Optional(t) => t.read_from_u32(),
+            SupportedTypes::SimpleTypes(t) => t.read_from_u32(),
         }
     }
 
@@ -768,6 +765,13 @@ impl SupportedTypes {
         match self {
             SupportedTypes::Optional(_) => todo!(),
             SupportedTypes::SimpleTypes(t) => t.js(parameter, read),
+        }
+    }
+
+    fn js_inlined(&self, parameter: String) -> String {
+        match self {
+            SupportedTypes::Optional(_) => todo!(),
+            SupportedTypes::SimpleTypes(t) => t.js_inlined(parameter),
         }
     }
 
@@ -809,7 +813,7 @@ enum SimpleTypes {
 }
 
 impl SimpleTypes {
-    fn sized(&self) -> bool {
+    fn read_from_u32(&self) -> bool {
         match self {
             SimpleTypes::Number(_) => true,
             SimpleTypes::Slice(_) => false,
@@ -830,7 +834,7 @@ impl SimpleTypes {
     fn min_size(&self) -> usize {
         match self {
             SimpleTypes::Number(n) => n.size(),
-            SimpleTypes::Slice(s) => s.len_size_bytes(),
+            SimpleTypes::Slice(s) => s.min_size(),
             SimpleTypes::Str(s) => s.min_size(),
             SimpleTypes::Writable(w) => w.min_size(),
         }
@@ -839,9 +843,18 @@ impl SimpleTypes {
     fn js(&self, parameter: String, read: &mut Read) -> String {
         match self {
             SimpleTypes::Number(n) => n.js(parameter, read),
-            SimpleTypes::Slice(s) => s.js(parameter, read),
+            SimpleTypes::Slice(_) => panic!("not supported"),
             SimpleTypes::Str(s) => s.js(parameter, read),
             SimpleTypes::Writable(w) => w.js(parameter, read),
+        }
+    }
+
+    fn js_inlined(&self, parameter: String) -> String {
+        match self {
+            SimpleTypes::Number(n) => n.js_inlined(parameter),
+            SimpleTypes::Slice(s) => s.js_inlined(parameter),
+            SimpleTypes::Str(s) => s.js_inlined(parameter),
+            SimpleTypes::Writable(w) => w.js_inlined(parameter),
         }
     }
 
@@ -1031,30 +1044,25 @@ struct Slice {
 }
 
 impl Slice {
-    fn len_size_bytes(&self) -> usize {
-        self.size.size()
+    fn min_size(&self) -> usize {
+        self.size.size() + 4
     }
 
-    // the position must be up to date before calling this
-    fn js(&self, parameter: String, reader: &mut Read) -> String {
-        let size_bytes = self.len_size_bytes();
-        let read = select_bits_js(reader, size_bytes * 8);
-        reader.pos += size_bytes;
-        match self.inner {
-            Number::U8 => format!(
-                "p+={};{}=new Uint8Array(m.buffer, p, {});p+={};",
-                size_bytes, parameter, read, read
-            ),
-            Number::U16 => format!(
-                "p+={};{}=new Uint16Array(m.buffer, p, {});p+={};",
-                size_bytes, parameter, read, read
-            ),
-            Number::U32 => format!(
-                "p+={};{}=new Uint32Array(m.buffer, p, {});p+={};",
-                size_bytes, parameter, read, read
-            ),
+    fn js_inlined(&self, parameter: String) -> String {
+        let ptr_read = Number::U32.js_get_inlined();
+        let len_read = match self.size {
+            Number::U8 => "m.getUint8(p+=4,true)".to_string(),
+            Number::U16 => "m.getUint16(p+=4,true)".to_string(),
+            Number::U32 => "m.getUint32(p+=4,true)".to_string(),
+            _ => panic!("unsupported length type"),
+        };
+        let read = match self.inner {
+            Number::U8 => format!("new Uint8Array(m.buffer, {}, {});", ptr_read, len_read),
+            Number::U16 => format!("new Uint16Array(m.buffer, {}, {});", ptr_read, len_read),
+            Number::U32 => format!("new Uint32Array(m.buffer, {}, {});", ptr_read, len_read),
             _ => todo!(),
-        }
+        };
+        parameter + "=" + &read + ";p+=" + &self.size.size().to_string() + ";"
     }
 
     fn to_tokens(&self) -> TokenStream2 {
@@ -1068,20 +1076,13 @@ impl Slice {
     fn encode(&self, name: &Ident) -> TokenStream2 {
         let len = Ident::new("len", Span::call_site());
         let encode_len = self.size.encode(&len);
-        let ty = self.inner.to_tokens();
+        let ptr = Ident::new("ptr", Span::call_site());
+        let encode_ptr = Number::U32.encode(&ptr);
         quote! {
+            let #ptr = #name.as_ptr();
+            #encode_ptr
             let #len = #name.len();
             #encode_len
-            self.msg.reserve(#len);
-            let msg_ptr = self.msg.as_mut_ptr();
-            let slice_ptr = #name.as_ptr();
-            let old_len = self.msg.len();
-            unsafe{
-                for i in 0..#len {
-                    *msg_ptr.add(old_len).cast::<#ty>().add(i) = *slice_ptr.add(i);
-                }
-            }
-            self.msg.set_len(old_len + #len);
         }
     }
 }
@@ -1231,11 +1232,7 @@ impl Str {
     }
 
     fn js_inlined(&self, parameter: String) -> String {
-        format!(
-            "{}=s.substring(sp,sp+={});",
-            parameter,
-            self.js_get_inlined().unwrap(),
-        )
+        format!("{}={};", parameter, self.js_get_inlined().unwrap())
     }
 
     fn js_get_inlined(&self) -> Option<String> {
@@ -1397,37 +1394,17 @@ impl<I: Item> Bin<I> {
 impl Bin<(Ident, SupportedTypes)> {
     fn js(&self) -> String {
         if let &[BinEntry {
-            item: (name, SupportedTypes::SimpleTypes(SimpleTypes::Number(n))),
+            item: (name, SupportedTypes::SimpleTypes(ty)),
         }] = &self.filled.as_slice()
         {
-            let mut js = n.js_inlined(name.to_string());
-            // move the pointer forward by the number of bytes read
-            js += "p += ";
-            js += &self.position.to_string();
-            js += ";";
-            return js;
-        } else if let &[BinEntry {
-            item: (name, SupportedTypes::SimpleTypes(SimpleTypes::Str(s))),
-        }] = &self.filled.as_slice()
-        {
-            if s.cache_name.is_none() {
-                let mut js = s.js_inlined(name.to_string());
+            if ty.inlinable() {
+                let mut js = ty.js_inlined(name.to_string());
                 // move the pointer forward by the number of bytes read
                 js += "p += ";
                 js += &self.position.to_string();
                 js += ";";
                 return js;
             }
-        } else if let &[BinEntry {
-            item: (name, SupportedTypes::SimpleTypes(SimpleTypes::Writable(s))),
-        }] = &self.filled.as_slice()
-        {
-            let mut js = s.js_inlined(name.to_string());
-            // move the pointer forward by the number of bytes read
-            js += "p += ";
-            js += &self.position.to_string();
-            js += ";";
-            return js;
         }
 
         let mut js = String::new();
@@ -1459,7 +1436,7 @@ trait Item {
 
 impl Item for (Ident, SupportedTypes) {
     fn sized(&self) -> bool {
-        self.1.sized()
+        self.1.read_from_u32()
     }
 
     fn size(&self) -> usize {
