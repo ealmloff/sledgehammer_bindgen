@@ -1,4 +1,54 @@
-#![allow(rustdoc::invalid_rust_codeblocks)]
+//! <div align="center">
+//!  <h1>sledgehammer bindgen</h1>
+//!  </div>
+//!  <div align="center">
+//!    <!-- Crates version -->
+//!    <a href="https://crates.io/crates/sledgehammer_bindgen">
+//!      <img src="https://img.shields.io/crates/v/sledgehammer_bindgen.svg?style=flat-square"
+//!      alt="Crates.io version" />
+//!    </a>
+//!    <!-- Downloads -->
+//!    <a href="https://crates.io/crates/sledgehammer_bindgen">
+//!      <img src="https://img.shields.io/crates/d/sledgehammer_bindgen.svg?style=flat-square"
+//!        alt="Download" />
+//!    </a>
+//!    <!-- docs -->
+//!    <a href="https://docs.rs/sledgehammer_bindgen">
+//!      <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
+//!        alt="docs.rs docs" />
+//!    </a>
+//!  </div>
+//!  
+//!  # What is Sledgehammer Bindgen?
+//!  Sledgehammer bindgen provides faster rust batched bindings into javascript code.
+//!  
+//!  # How does this compare to wasm-bindgen:
+//!  - wasm-bindgen is a lot more general it allows returning values and passing around a lot more different types of values. For most users wasm-bindgen is a beter choice. Sledgehammer bindgen is specifically that want low-level, fast access to javascript.
+//!  
+//!  - You can use sledgehammer bindgen with wasm-bindgen. See the docs and examples for more information.
+//!  
+//!  # Why is it fast?
+//!  
+//!  ## String decoding
+//!  
+//!  - Decoding strings are expensive to decode, but the cost doesn't change much with the size of the string. Wasm-bindgen calls TextDecoder.decode for every string. Sledgehammer only calls TextEncoder.decode once per batch.
+//!  
+//!  - If the string is small, it is faster to decode the string in javascript to avoid the constant overhead of TextDecoder.decode
+//!  
+//!  - See this benchmark: https://jsbench.me/4vl97c05lb/5
+//!  
+//!  ## String Caching
+//!  
+//!  - You can cache strings in javascript to avoid decoding the same string multiple times.
+//!  - If the string is static the string will be hashed by pointer instead of by value which is significantly faster.
+//!  
+//!  ## Byte encoded operations
+//!  
+//!  - Every operation is encoded as a sequence of bytes packed into an array. Every operation takes 1 byte plus whatever data is required for it.
+//!  
+//!  - Each operation is encoded in a batch of four as a u32. Getting a number from an array buffer has a high constant cost, but getting a u32 instead of a u8 is not more expensive. Sledgehammer bindgen reads the u32 and then splits it into the 4 individual bytes. It will shuffle and pack the bytes into as few buckets as possible and try to inline reads into the javascript.
+//!  
+//!  - See this benchmark: https://jsbench.me/csl9lfauwi/2
 use std::collections::HashSet;
 use std::ops::Deref;
 
@@ -60,12 +110,13 @@ use syn::{ForeignItemFn, ItemFn, TypeParamBound};
 ///     // Writable allows you to pass in any type that implements the Writable trait.
 ///     // Because all strings are encoded in a sequental buffer, every string needs to be copied to the new buffer.
 ///     // If you only create a single string from a Arguments<'_> or number, you can use the Writable trait to avoid allocting a string and then copying it.
-///     fn takes_writable(writable: impl Writable) {
+///     // the generic parameter is the type of the length of the resulting string. u32 is the default.
+///     fn takes_writable(writable: impl Writable<u8>) {
 ///         "console.log($writable$);"
 ///     }
 ///
-///     // simlar to &str, you can use the &[T<SIZE>] syntax to specify the type that should be used to store the length of the array.
-///     // valid types are &[u8<SIZE>], &[u16<SIZE>], &[u32<SIZE>].
+///     // valid types are &[u8], &[u16], &[u32].
+///     // the generic parameter is the type of the length of the array. u32 is the default.
 ///     fn takes_slices(slice1: &[u8], slice2: &[u8<u16>]) {
 ///         "console.log($slice1$, $slice2$);"
 ///     }
@@ -84,7 +135,7 @@ use syn::{ForeignItemFn, ItemFn, TypeParamBound};
 /// channel2.takes_slices(&[1, 2, 3], &[4, 5, 6]);
 /// // flush executes all the queued calls and clears the queue.
 /// channel2.flush();
-/// get(0);
+/// assert_eq!(get(0), "hello");
 /// ```
 #[proc_macro_attribute]
 pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
