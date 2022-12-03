@@ -35,7 +35,7 @@
 //!  
 //!  - If the string is small, it is faster to decode the string in javascript to avoid the constant overhead of TextDecoder.decode
 //!  
-//!  - See this benchmark: https://jsbench.me/4vl97c05lb/5
+//!  - See this benchmark: <https://jsbench.me/4vl97c05lb/5>
 //!  
 //!  ## String Caching
 //!  
@@ -48,7 +48,7 @@
 //!  
 //!  - Each operation is encoded in a batch of four as a u32. Getting a number from an array buffer has a high constant cost, but getting a u32 instead of a u8 is not more expensive. Sledgehammer bindgen reads the u32 and then splits it into the 4 individual bytes. It will shuffle and pack the bytes into as few buckets as possible and try to inline reads into the javascript.
 //!  
-//!  - See this benchmark: https://jsbench.me/csl9lfauwi/2
+//!  - See this benchmark: <https://jsbench.me/csl9lfauwi/2>
 use std::collections::HashSet;
 use std::ops::Deref;
 
