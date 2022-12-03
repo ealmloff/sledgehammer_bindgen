@@ -1,13 +1,14 @@
 #![allow(rustdoc::invalid_rust_codeblocks)]
 use std::collections::HashSet;
+use std::ops::Deref;
 
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::TypeParamBound;
 use syn::{
     parse::Parse, parse_macro_input, Expr, GenericArgument, Ident, Lit, Pat, PathArguments, Type,
 };
+use syn::{ForeignItemFn, ItemFn, TypeParamBound};
 
 /// # Generates bindings for batched calls to js functions. The generated code is a Channel struct with methods for each function.
 /// **The function calls to the generated methods are queued and only executed when flush is called.**
@@ -16,11 +17,22 @@ use syn::{
 ///
 /// ```rust, ignore
 /// #[bindgen]
-/// extern "C" {
+/// mod js {
 ///     // initialize is a special function that is called when the js is initialized. It can be used to set up the js environment.
-///     fn initialize() {
-///         // this is the js code that is executed when initialize is called.
-///         r#"let nodes = [document.getElementById("main")];"#
+///     // this is the js code that is executed when the js is loaded.
+///     const JS: &str = r#"
+///         const nodes = ["hello"];
+///
+///         export function get(id) {
+///             console.log("got", nodes[id]);
+///             return nodes[id];
+///         }
+///     "#;
+///
+///     // extern blocks allow communicating with wasm-bindgen. The javascript linked is the JS constant above.
+///     extern "C" {
+///         #[wasm_bindgen]
+///         fn get(id: u32) -> String;
 ///     }
 ///
 ///     // valid number types are u8, u16, u24, u32. u24 is defined in the ux crate.
@@ -52,11 +64,28 @@ use syn::{
 ///         "console.log($writable$);"
 ///     }
 ///
-///     // simlar to strings, you can use the &[T<SIZE>] syntax to specify the type that should be used to store the length of the array.
-///     // valid types are &[u8], &[u16], &[u32].
+///     // simlar to &str, you can use the &[T<SIZE>] syntax to specify the type that should be used to store the length of the array.
+///     // valid types are &[u8<SIZE>], &[u16<SIZE>], &[u32<SIZE>].
 ///     fn takes_slices(slice1: &[u8], slice2: &[u8<u16>]) {
 ///         "console.log($slice1$, $slice2$);"
 ///     }
+/// }
+///
+/// fn main() {
+///     let mut channel1 = Channel::default();
+///     let mut channel2 = Channel::default();
+///     channel1.takes_strings("hello", "world");
+///     channel1.takes_numbers(1, 2, u24::new(3), 4);
+///     channel1.takes_cachable_strings("hello", "world");
+///     channel1.takes_cachable_strings("hello", "world");
+///     channel1.takes_cachable_strings("hello", "world");
+///     channel1.takes_writable(format_args!("hello {}", "world"));
+///     // append can be used to append the calls from one channel to another.
+///     channel2.append(channel1);
+///     channel2.takes_slices(&[1, 2, 3], &[4, 5, 6]);
+///     // flush executes all the queued calls and clears the queue.
+///     channel2.flush();
+///     get(0);
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -69,23 +98,42 @@ pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
 #[derive(Debug)]
 struct Bindings {
     functions: Vec<FunctionBinding>,
-    intialize: Option<FunctionBinding>,
+    foreign_items: Vec<ForeignItemFn>,
+    intialize: Option<String>,
 }
 
 impl Parse for Bindings {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let extren_block = syn::ItemForeignMod::parse(input)?;
+        let extren_block = syn::ItemMod::parse(input)?;
 
         let mut functions = Vec::new();
+        let mut foreign_items = Vec::new();
         let mut intialize = None;
-        for item in extren_block.items {
+        for item in extren_block.content.unwrap().1 {
             match item {
-                syn::ForeignItem::Verbatim(s) => {
-                    let f: FunctionBinding = syn::parse2(s).unwrap();
-                    if f.name == "initialize" {
-                        intialize = Some(f);
-                    } else {
-                        functions.push(f);
+                syn::Item::Const(cnst) => {
+                    if cnst.ident == "JS" {
+                        let body = if let Expr::Lit(lit) = cnst.expr.deref() {
+                            if let Lit::Str(s) = &lit.lit {
+                                s.value()
+                            } else {
+                                panic!("missing body")
+                            }
+                        } else {
+                            panic!("missing body")
+                        };
+                        intialize = Some(body);
+                    }
+                }
+                syn::Item::Fn(f) => {
+                    let f = FunctionBinding::new(f);
+                    functions.push(f);
+                }
+                syn::Item::ForeignMod(m) => {
+                    for item in m.items {
+                        if let syn::ForeignItem::Fn(f) = item {
+                            foreign_items.push(f)
+                        }
                     }
                 }
                 _ => panic!("only functions are supported"),
@@ -94,6 +142,7 @@ impl Parse for Bindings {
 
         Ok(Bindings {
             functions,
+            foreign_items,
             intialize,
         })
     }
@@ -173,7 +222,7 @@ fn select_bits_js_inner(from: &str, size: usize, pos: usize, len: usize) -> Stri
 impl Bindings {
     fn js(&mut self) -> String {
         let op_size = function_discriminant_size_bits(self.functions.len() as u32);
-        let initialize = self.intialize.as_mut().map(|f| f.js()).unwrap_or_default();
+        let initialize = self.intialize.as_deref().unwrap_or_default();
         let cache_names: HashSet<&Ident> = self
             .functions
             .iter()
@@ -229,6 +278,7 @@ impl Bindings {
     fn as_tokens(&mut self) -> TokenStream2 {
         let all_js = self.js();
         let channel = self.channel();
+        let foreign_items = &self.foreign_items;
 
         let cache_names: HashSet<(&Ident, bool)> = self
             .functions
@@ -302,6 +352,7 @@ impl Bindings {
                 fn create(metadata_ptr: usize);
                 fn run();
                 fn update_memory(memory: wasm_bindgen::JsValue);
+                #(#foreign_items)*
             }
             #(#setup)*
             #channel
@@ -520,6 +571,45 @@ struct FunctionBinding {
 }
 
 impl FunctionBinding {
+    fn new(function: ItemFn) -> Self {
+        let name = function.sig.ident;
+        let args = function
+            .sig
+            .inputs
+            .iter()
+            .map(|arg| match arg {
+                syn::FnArg::Receiver(_) => todo!("self"),
+                syn::FnArg::Typed(ty) => {
+                    let ident = if let Pat::Ident(i) = &*ty.pat {
+                        i.ident.clone()
+                    } else {
+                        panic!("only simple idents are supported")
+                    };
+                    (ident, SupportedTypes::from(&*ty.ty))
+                }
+            })
+            .collect();
+
+        let body = if let &[syn::Stmt::Expr(Expr::Lit(lit))] = &function.block.stmts.as_slice() {
+            if let Lit::Str(s) = &lit.lit {
+                s.value()
+            } else {
+                panic!("missing body")
+            }
+        } else {
+            panic!("missing body")
+        };
+        let body = parse_js_body(&body);
+
+        Self {
+            name,
+            args,
+            body,
+            bins: Vec::new(),
+            remaining: Vec::new(),
+        }
+    }
+
     fn js(&mut self) -> String {
         let args = self.args.clone();
         let (bins, remaining) = pack(args, 4);
@@ -687,48 +777,6 @@ impl FunctionBinding {
                 }
             }
         }
-    }
-}
-
-impl Parse for FunctionBinding {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let function = syn::ItemFn::parse(input)?;
-        let name = function.sig.ident;
-        let args = function
-            .sig
-            .inputs
-            .iter()
-            .map(|arg| match arg {
-                syn::FnArg::Receiver(_) => todo!("self"),
-                syn::FnArg::Typed(ty) => {
-                    let ident = if let Pat::Ident(i) = &*ty.pat {
-                        i.ident.clone()
-                    } else {
-                        panic!("only simple idents are supported")
-                    };
-                    (ident, SupportedTypes::from(&*ty.ty))
-                }
-            })
-            .collect();
-
-        let body = if let &[syn::Stmt::Expr(Expr::Lit(lit))] = &function.block.stmts.as_slice() {
-            if let Lit::Str(s) = &lit.lit {
-                s.value()
-            } else {
-                panic!("missing body")
-            }
-        } else {
-            panic!("missing body")
-        };
-        let body = parse_js_body(&body);
-
-        Ok(Self {
-            name,
-            args,
-            body,
-            bins: Vec::new(),
-            remaining: Vec::new(),
-        })
     }
 }
 
