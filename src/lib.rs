@@ -71,22 +71,20 @@ use syn::{ForeignItemFn, ItemFn, TypeParamBound};
 ///     }
 /// }
 ///
-/// fn main() {
-///     let mut channel1 = Channel::default();
-///     let mut channel2 = Channel::default();
-///     channel1.takes_strings("hello", "world");
-///     channel1.takes_numbers(1, 2, u24::new(3), 4);
-///     channel1.takes_cachable_strings("hello", "world");
-///     channel1.takes_cachable_strings("hello", "world");
-///     channel1.takes_cachable_strings("hello", "world");
-///     channel1.takes_writable(format_args!("hello {}", "world"));
-///     // append can be used to append the calls from one channel to another.
-///     channel2.append(channel1);
-///     channel2.takes_slices(&[1, 2, 3], &[4, 5, 6]);
-///     // flush executes all the queued calls and clears the queue.
-///     channel2.flush();
-///     get(0);
-/// }
+/// let mut channel1 = Channel::default();
+/// let mut channel2 = Channel::default();
+/// channel1.takes_strings("hello", "world");
+/// channel1.takes_numbers(1, 2, u24::new(3), 4);
+/// channel1.takes_cachable_strings("hello", "world");
+/// channel1.takes_cachable_strings("hello", "world");
+/// channel1.takes_cachable_strings("hello", "world");
+/// channel1.takes_writable(format_args!("hello {}", "world"));
+/// // append can be used to append the calls from one channel to another.
+/// channel2.append(channel1);
+/// channel2.takes_slices(&[1, 2, 3], &[4, 5, 6]);
+/// // flush executes all the queued calls and clears the queue.
+/// channel2.flush();
+/// get(0);
 /// ```
 #[proc_macro_attribute]
 pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
