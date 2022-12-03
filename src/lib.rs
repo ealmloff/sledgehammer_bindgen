@@ -1,3 +1,4 @@
+#![allow(rustdoc::invalid_rust_codeblocks)]
 use std::collections::HashSet;
 
 use proc_macro::TokenStream;
@@ -8,6 +9,69 @@ use syn::{
     parse::Parse, parse_macro_input, Expr, GenericArgument, Ident, Lit, Pat, PathArguments, Type,
 };
 
+/// # Generates bindings for batched calls to js functions. The generated code is a Channel struct with methods for each function.
+/// **The function calls to the generated methods are queued and only executed when flush is called.**
+///
+/// Some of the code generated uses the `sledgehammer_utils` crate, so you need to add that crate as a dependency.
+///
+/// ```rust, ignore
+/// #[bindgen]
+/// extern "C" {
+///     // initialize is a special function that is called when the js is initialized. It can be used to set up the js environment.
+///     fn initialize() {
+///         // this is the js code that is executed when initialize is called.
+///         r#"let nodes = [document.getElementById("main")];"#
+///     }
+///     
+///     // valid number types are u8, u16, u24, u32. u24 is defined in the ux crate.
+///     fn takes_numbers(n1: u8, n2: u16, n3: u24, n4: u32) {
+///         // this is the js code that is executed when takes_numbers is called.
+///         // dollar signs around the arguments mark that the arguments are safe to inline (they only appear once).
+///         // you can escape dollar signs with a backslash.
+///         "console.log($n1$, $n2$, $n3$, $n4$, "\$");"
+///     }
+///
+///     // valid string types are &str<u8>, &str<u16>, &str<u32>.
+///     // the generic parameter is the type of the length of the string. u32 is the default.
+///     fn takes_strings(str1: &str, str2: &str<u8>) {
+///         "console.log($str1$, $str2$);"
+///     }
+///
+///     // you can also use the &str<SIZE, cache_name> syntax to cache the string in a js variable.
+///     // each cache has a name that can be reused throughout the bindings so that different functions can share the same cache.
+///     // the cache has a size of 128 values.
+///     // caches on static strings use the pointer to hash the string which is faster than hashing the string itself.
+///     fn takes_cachable_strings(str1: &str<u8, cache1>, str2: &'static str<u16, cache2>) {
+///         "console.log($str1$, $str2$);"
+///     }
+///
+///     // Writable allows you to pass in any type that implements the Writable trait.
+///     // Because all strings are encoded in a sequental buffer, every string needs to be copied to the new buffer.
+///     // If you only create a single string from a Arguments<'_> or number, you can use the Writable trait to avoid allocting a string and then copying it.
+///     fn takes_writable(writable: Writable) {
+///         "console.log($writable$);"
+///     }
+///
+///     // simlar to strings, you can use the &[T<SIZE>] syntax to specify the type that should be used to store the length of the array.
+///     // valid types are &[u8], &[u16], &[u32].
+///     //
+///     // NOTE: this is efficient for small arrays, but for large arrays it is better to use a typed array through wasm bindgen.
+///     fn takes_slices(slice1: &[u8], slice2: &[u8<u16>]) {
+///        "console.log($slice1$, $slice2$);"
+///     }
+/// }
+/// let mut channel1 = Channel::default();
+/// channel1.takes_numbers(1, 2, u24::new(3), 4);
+/// channel1.takes_strings("hello", "world");
+/// channel1.takes_cachable_strings("hello", "world");
+/// channel1.takes_writable(format_args!("hello {}", "world"));
+/// channel1.takes_slices(&[1, 2, 3], &[4, 5, 6]);
+/// let mut channel2 = Channel::default();
+/// // append can be used to append the calls from one channel to another.
+/// channel2.append(channel1);
+/// // flush executes all the queued calls and clears the queue.
+/// channel2.flush();
+/// ```
 #[proc_macro_attribute]
 pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as Bindings);
@@ -202,11 +266,11 @@ impl Bindings {
                 else{
                     quote!{
                         #[allow(non_upper_case_globals)]
-                        static mut #cache: once_cell::sync::Lazy<
-                            lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>,
-                        > = once_cell::sync::Lazy::new(|| {
-                            let build_hasher = std::hash::BuildHasherDefault::<rustc_hash::FxHasher>::default();
-                            lru::LruCache::with_hasher(std::num::NonZeroUsize::new(128).unwrap(), build_hasher)
+                        static mut #cache: sledgehammer_utils::once_cell::sync::Lazy<
+                            sledgehammer_utils::lru::LruCache<String, u8, std::hash::BuildHasherDefault<sledgehammer_utils::rustc_hash::FxHasher>>,
+                        > = sledgehammer_utils::once_cell::sync::Lazy::new(|| {
+                            let build_hasher = std::hash::BuildHasherDefault::<sledgehammer_utils::rustc_hash::FxHasher>::default();
+                            sledgehammer_utils::lru::LruCache::with_hasher(std::num::NonZeroUsize::new(128).unwrap(), build_hasher)
                         });
                     }
                 }
@@ -1353,7 +1417,7 @@ impl Bin<(Ident, SupportedTypes)> {
             item: (name, SupportedTypes::SimpleTypes(SimpleTypes::Str(s))),
         }] = &self.filled.as_slice()
         {
-            if !s.static_str {
+            if s.cache_name.is_none() {
                 let mut js = s.js_inlined(name.to_string());
                 // move the pointer forward by the number of bytes read
                 js += "p += ";

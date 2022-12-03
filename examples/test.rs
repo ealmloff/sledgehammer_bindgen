@@ -1,5 +1,5 @@
 use sledgehammer_bindgen::bindgen;
-use ux::*;
+use sledgehammer_utils::ux::u24;
 
 fn main() {
     #[bindgen]
