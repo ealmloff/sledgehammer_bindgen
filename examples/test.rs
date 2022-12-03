@@ -1,67 +1,82 @@
 use sledgehammer_bindgen::bindgen;
-use sledgehammer_utils::ux::u24;
+use web_sys::{console, Node};
 
 fn main() {
     #[bindgen]
-    extern "C" {
-        fn initialize() {
-            "let nodes = [document.getElementById(\"main\")];"
+    mod js {
+        const JS: &str = r#"const nodes = [document.getElementById("main")];
+        export function get_node(id){
+            return nodes[id];
+        }"#;
+
+        extern "C" {
+            #[wasm_bindgen]
+            fn get_node(id: u16) -> Node;
         }
-        fn set_attribute(id: u24, name: &str<u8, name_cache>, value: &str<u16>) -> i32 {
-            "nodes[$id$].setAttribute($name$, $value$);"
-        }
-        fn set_attribute_ns(
-            id: u24,
-            name: &str<u8, name_cache>,
-            namespace: &str<u8, ns_cache>,
-            value: &str<u16>,
-        ) {
-            "nodes[$id$].setAttributeNS($namespace$, $name$, $value$);"
-        }
-        fn create_element(id: u24, name: &str<u8, name_cache>) {
+
+        fn create_element(id: u16, name: &'static str<u8, name_cache>) {
             "nodes[$id$]=document.createElement($name$);"
         }
-        fn create_element_ns(id: u24, name: &str<u8, name_cache>, namespace: &str<u8, ns_cache>) {
-            "nodes[$id$]=document.createElementNS($namespace$, $name$);"
+
+        fn create_element_ns(
+            id: u16,
+            name: &'static str<u8, name_cache>,
+            ns: &'static str<u8, ns_cache>,
+        ) {
+            "nodes[$id$]=document.createElementNS($ns$,$name$);"
         }
-        fn create_text_node(id: u24, text: &str<u16>) {
-            "nodes[$id$]=document.createTextNode($text$);"
+
+        fn set_attribute(id: u16, name: &'static str<u8, name_cache>, val: impl Writable<u8>) {
+            "nodes[$id$].setAttribute($name$,$val$);"
         }
-        fn append_child(parent: u24, child: u24) {
-            "nodes[$parent$].appendChild(nodes[$child$]);"
+
+        fn remove_attribute(id: u16, name: &'static str<u8, name_cache>) {
+            "nodes[$id$].removeAttribute($name$);"
         }
-        fn remove_child(parent: u24, child: u24) {
-            "nodes[$parent$].removeChild(nodes[$child$]);"
+
+        fn append_child(id: u16, id2: u16) {
+            "nodes[$id$].appendChild(nodes[$id2$]);"
         }
-        fn insert_before(parent: u24, child: u24) {
-            "nodes[$parent$].before(nodes[$child$]);"
+
+        fn insert_before(parent: u16, id: u16, id2: u16) {
+            "nodes[$parent$].insertBefore(nodes[$id$],nodes[$id2$]);"
         }
-        fn replace_child(parent: u24, child: u24) {
-            "nodes[$parent$].after(nodes[$child$]);"
+
+        fn set_text(id: u16, text: impl Writable<u8>) {
+            "nodes[$id$].textContent=$text$;"
         }
-        fn set_text_content(id: u24, text: &str<u16>) {
-            "nodes[$id$].textContent = $text$;"
-        }
-        fn remove(id: u24) {
+
+        fn remove(id: u16) {
             "nodes[$id$].remove();"
         }
-        fn replace(id: u24, new_id: u24) {
-            "nodes[$id$].replaceWith(nodes[$new_id$]);"
+
+        fn replace(id: u16, id2: u16) {
+            "nodes[$id$].replaceWith(nodes[$id2$]);"
         }
-        fn clone(id: u24, into: u24) {
-            "nodes[$into$]= nodes[$id$].cloneNode();"
+
+        fn clone(id: u16, id2: u16) {
+            "nodes[$id2$]=nodes[$id$].cloneNode(true);"
         }
-        fn test(path: &[u8<u8>], id: u24) {
-            "console.log($path$, $id$);"
+
+        fn first_child(id: u16) {
+            "node[id]=node[id].firstChild;"
+        }
+
+        fn next_sibling(id: u16) {
+            "node[id]=node[id].nextSibling;"
         }
     }
+
     let mut channel1 = Channel::default();
-    channel1.create_element(1u8.into(), "div");
-    channel1.create_element_ns(2u8.into(), "svg", "http://www.w3.org/2000/svg");
-    let mut channel2 = Channel::default();
-    channel2.append(channel1);
-    channel2.append_child(0u8.into(), 1u8.into());
-    channel2.append_child(1u8.into(), 2u8.into());
-    channel2.test(&[1, 2, 3], 4u8.into());
-    channel2.flush();
+    let main = 0;
+    let node1 = 1;
+    let node2 = 2;
+    channel1.create_element(node1, "div");
+    channel1.create_element(node2, "span");
+    channel1.append_child(node1, node2);
+    channel1.set_text(node2, "Hello World!");
+    channel1.append_child(main, node1);
+    channel1.flush();
+
+    console::log_1(&get_node(0).into());
 }

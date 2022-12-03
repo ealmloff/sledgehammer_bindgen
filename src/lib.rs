@@ -21,11 +21,11 @@ use syn::{ForeignItemFn, ItemFn, TypeParamBound};
 ///     // initialize is a special function that is called when the js is initialized. It can be used to set up the js environment.
 ///     // this is the js code that is executed when the js is loaded.
 ///     const JS: &str = r#"
-///         const nodes = ["hello"];
+///         const text = ["hello"];
 ///
 ///         export function get(id) {
-///             console.log("got", nodes[id]);
-///             return nodes[id];
+///             console.log("got", text[id]);
+///             return text[id];
 ///         }
 ///     "#;
 ///
@@ -436,66 +436,68 @@ impl Bindings {
                     }
                 }
 
-                #[cfg(target_family = "wasm")]
                 pub fn flush(&mut self){
-                    self.encode_op(#end_msg);
-                    let msg_ptr = self.msg.as_ptr();
-                    let str_ptr = self.str_buffer.as_ptr();
-                    // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
-                    if unsafe { *METADATA } == 255 {
-                        // this is the first message, so we need to encode all the metadata
-                        unsafe {
-                            create(DATA.as_mut_ptr() as usize);
-                            *DATA_PTR = msg_ptr;
-                            *STR_PTR = str_ptr;
-                            *METADATA = 7;
-                        }
-                    } else {
-                        if unsafe { *DATA_PTR } != msg_ptr {
+                    #[cfg(target_family = "wasm")]
+                    {
+                        self.encode_op(#end_msg);
+                        let msg_ptr = self.msg.as_ptr();
+                        let str_ptr = self.str_buffer.as_ptr();
+                        // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
+                        if unsafe { *METADATA } == 255 {
+                            // this is the first message, so we need to encode all the metadata
                             unsafe {
+                                create(DATA.as_mut_ptr() as usize);
                                 *DATA_PTR = msg_ptr;
-                                // the first bit encodes if the msg pointer has changed
-                                *METADATA = 1;
+                                *STR_PTR = str_ptr;
+                                *METADATA = 7;
                             }
                         } else {
-                            unsafe {
-                                // the first bit encodes if the msg pointer has changed
-                                *METADATA = 0;
+                            if unsafe { *DATA_PTR } != msg_ptr {
+                                unsafe {
+                                    *DATA_PTR = msg_ptr;
+                                    // the first bit encodes if the msg pointer has changed
+                                    *METADATA = 1;
+                                }
+                            } else {
+                                unsafe {
+                                    // the first bit encodes if the msg pointer has changed
+                                    *METADATA = 0;
+                                }
+                            }
+                            if unsafe { *STR_PTR } != str_ptr {
+                                unsafe {
+                                    *STR_PTR = str_ptr;
+                                    // the second bit encodes if the str pointer has changed
+                                    *METADATA |= 2;
+                                }
                             }
                         }
-                        if unsafe { *STR_PTR } != str_ptr {
-                            unsafe {
-                                *STR_PTR = str_ptr;
-                                // the second bit encodes if the str pointer has changed
-                                *METADATA |= 2;
+                        unsafe {
+                            if !self.str_buffer.is_empty() {
+                                // the third bit encodes if there is any strings
+                                *METADATA |= 4;
+                                *STR_LEN_PTR = self.str_buffer.len() as u32;
+                                if *STR_LEN_PTR < 100 {
+                                    // the fourth bit encodes if the strings are entirely ascii and small
+                                    *METADATA |= (self.str_buffer.is_ascii() as u8) << 3;
+                                }
                             }
                         }
-                    }
-                    unsafe {
-                        if !self.str_buffer.is_empty() {
-                            // the third bit encodes if there is any strings
-                            *METADATA |= 4;
-                            *STR_LEN_PTR = self.str_buffer.len() as u32;
-                            if *STR_LEN_PTR < 100 {
-                                // the fourth bit encodes if the strings are entirely ascii and small
-                                *METADATA |= (self.str_buffer.is_ascii() as u8) << 3;
+                        let new_mem_size = core::arch::wasm32::memory_size(0);
+                        unsafe{
+                            // we need to update the memory if the memory has grown
+                            if new_mem_size != LAST_MEM_SIZE {
+                                LAST_MEM_SIZE = new_mem_size;
+                                update_memory(wasm_bindgen::memory());
                             }
                         }
-                    }
-                    let new_mem_size = core::arch::wasm32::memory_size(0);
-                    unsafe{
-                        // we need to update the memory if the memory has grown
-                        if new_mem_size != LAST_MEM_SIZE {
-                            LAST_MEM_SIZE = new_mem_size;
-                            update_memory(wasm_bindgen::memory());
-                        }
-                    }
 
-                    run();
-                    self.current_op_batch_idx = 0;
-                    self.current_op_byte_idx = #reads_per_u32;
-                    self.str_buffer.clear();
-                    self.msg.clear();
+                        run();
+                        self.current_op_batch_idx = 0;
+                        self.current_op_byte_idx = #reads_per_u32;
+                        self.str_buffer.clear();
+                        self.msg.clear();
+                    }
                 }
 
                 #(#methods)*
