@@ -22,13 +22,13 @@ use syn::{
 ///         // this is the js code that is executed when initialize is called.
 ///         r#"let nodes = [document.getElementById("main")];"#
 ///     }
-///     
+///
 ///     // valid number types are u8, u16, u24, u32. u24 is defined in the ux crate.
 ///     fn takes_numbers(n1: u8, n2: u16, n3: u24, n4: u32) {
 ///         // this is the js code that is executed when takes_numbers is called.
 ///         // dollar signs around the arguments mark that the arguments are safe to inline (they only appear once).
 ///         // you can escape dollar signs with a backslash.
-///         "console.log($n1$, $n2$, $n3$, $n4$, "\$");"
+///         r#"console.log($n1$, $n2$, $n3$, $n4$, "\$");"#
 ///     }
 ///
 ///     // valid string types are &str<u8>, &str<u16>, &str<u32>.
@@ -48,7 +48,7 @@ use syn::{
 ///     // Writable allows you to pass in any type that implements the Writable trait.
 ///     // Because all strings are encoded in a sequental buffer, every string needs to be copied to the new buffer.
 ///     // If you only create a single string from a Arguments<'_> or number, you can use the Writable trait to avoid allocting a string and then copying it.
-///     fn takes_writable(writable: Writable) {
+///     fn takes_writable(writable: impl Writable) {
 ///         "console.log($writable$);"
 ///     }
 ///
@@ -57,20 +57,9 @@ use syn::{
 ///     //
 ///     // NOTE: this is efficient for small arrays, but for large arrays it is better to use a typed array through wasm bindgen.
 ///     fn takes_slices(slice1: &[u8], slice2: &[u8<u16>]) {
-///        "console.log($slice1$, $slice2$);"
+///         "console.log($slice1$, $slice2$);"
 ///     }
 /// }
-/// let mut channel1 = Channel::default();
-/// channel1.takes_numbers(1, 2, u24::new(3), 4);
-/// channel1.takes_strings("hello", "world");
-/// channel1.takes_cachable_strings("hello", "world");
-/// channel1.takes_writable(format_args!("hello {}", "world"));
-/// channel1.takes_slices(&[1, 2, 3], &[4, 5, 6]);
-/// let mut channel2 = Channel::default();
-/// // append can be used to append the calls from one channel to another.
-/// channel2.append(channel1);
-/// // flush executes all the queued calls and clears the queue.
-/// channel2.flush();
 /// ```
 #[proc_macro_attribute]
 pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
