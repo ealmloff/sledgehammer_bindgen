@@ -573,7 +573,14 @@ fn parse_js_body(s: &str) -> JsBody {
         match c {
             '\\' => last_was_escape = true,
             '$' => {
-                if !last_was_escape {
+                if last_was_escape {
+                    if inside_param {
+                        current_param.push(c);
+                    } else {
+                        current_segment.push(c);
+                    }
+                    last_was_escape = false;
+                } else {
                     if inside_param {
                         segments.push((current_segment, current_param));
                         current_segment = String::new();
