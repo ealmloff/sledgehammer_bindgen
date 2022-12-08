@@ -12,7 +12,7 @@ keywords = ["web", "wasm", "dom"]
 categories = ["web-programming", "wasm", "api-bindings"]
 
 [dependencies]
-syn = { version="1.0", features=["full", "extra-traits"] }
+syn = { version="1.0", features = ["full", "extra-traits"] }
 quote = "1.0"
 
 [lib]

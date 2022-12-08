@@ -384,17 +384,11 @@ impl Bindings {
                 }
             }
             // force the data to be packed so that we only need to send one pointer to js
-            #[used]
             static mut DATA: [u8; 1 + 4 + 4 + 4] = [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            #[used]
             static mut METADATA: *mut u8 = unsafe { DATA.as_mut_ptr() };
-            #[used]
             static mut DATA_PTR: *mut *const u8 = unsafe { DATA.as_mut_ptr().add(1).cast() };
-            #[used]
             static mut STR_PTR: *mut *const u8 = unsafe { DATA.as_mut_ptr().add(5).cast() };
-            #[used]
             static mut STR_LEN_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(9).cast() };
-            #[used]
             static mut LAST_MEM_SIZE: usize = 0;
             #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
             extern "C" {
