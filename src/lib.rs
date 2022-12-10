@@ -436,6 +436,11 @@ impl Bindings {
             _ => panic!("unsupported size"),
         };
         quote! {
+            fn __copy(src: &[u8], dst: &mut [u8], len: usize) {
+                for (m, i) in dst.iter_mut().zip(src.iter().take(len)) {
+                    *m = *i;
+                }
+            }
             pub struct Channel {
                 msg: Vec<u8>,
                 str_buffer: Vec<u8>,
@@ -1340,21 +1345,18 @@ impl Str {
 
     fn encode(&self, name: &Ident) -> TokenStream2 {
         let len = Ident::new("len", Span::call_site());
-        let write_len = self.size_type.encode(&len);
+        let char_len = Ident::new("char_len", Span::call_site());
+        let write_len = self.size_type.encode(&char_len);
         let len_byte_size = self.size_type.size();
         let encode = quote! {
             unsafe {
                 let #len = #name.len();
+                let #char_len: usize = #name.chars().map(|c| c.len_utf16()).sum();
                 #write_len
                 let old_len = self.str_buffer.len();
                 self.str_buffer.reserve(#len);
-                let ptr = self.str_buffer.as_mut_ptr().add(old_len);
-                let bytes = #name.as_bytes();
-                let str_ptr = bytes.as_ptr();
-                for o in 0..#len {
-                    *ptr.add(o) = *str_ptr.add(o);
-                }
                 self.str_buffer.set_len(old_len + #len);
+                __copy(#name.as_bytes(), &mut self.str_buffer[old_len..], #len);
             }
         };
         match &self.cache_name {
@@ -1456,7 +1458,7 @@ impl Writable {
                 let prev_len = self.str_buffer.len();
                 #name.write(&mut self.str_buffer);
                 // the length of the string is the change in length of the string buffer
-                let #len = self.str_buffer.len() - prev_len;
+                let #len: usize = std::str::from_utf8_unchecked(&self.str_buffer[prev_len..]).chars().map(|c| c.len_utf16()).sum();
                 #write_len
             }
         }
