@@ -398,7 +398,9 @@ impl Bindings {
             extern "C" {
                 fn create(metadata_ptr: usize);
                 fn run();
-                fn run_from_buffer(buffer: &[u8]);
+                /// Runs the serialized message provided
+                /// To create a serialized message, use the [`Channel::to_bytes`] method
+                pub fn run_from_buffer(buffer: &[u8]);
                 fn update_memory(memory: wasm_bindgen::JsValue);
                 #(#foreign_items)*
             }
@@ -561,7 +563,7 @@ impl Bindings {
                     }
                 }
 
-                fn to_bytes(&mut self) -> Vec<u8> {
+                pub fn to_bytes(&mut self) -> Vec<u8> {
                     self.encode_op(#end_msg);
                     let str_len = self.str_buffer.len();
                     let str_all_ascii = self.str_buffer.is_ascii();
