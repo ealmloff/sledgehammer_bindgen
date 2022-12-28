@@ -80,7 +80,7 @@ fn main() {
     // This will clear the messages and serialize the channel into a buffer
     // This can be very useful for sending messages from a rust server to a js client or from native code to WASM
     let bytes = channel1.to_bytes();
-    console::log_1(&format!("{:?}", bytes).into());
+    console::log_1(&format!("{bytes:?}").into());
     assert_eq!(
         bytes,
         [
