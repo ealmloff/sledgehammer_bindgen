@@ -60,6 +60,8 @@ use syn::{
 };
 use syn::{ForeignItemFn, ItemFn, TypeParamBound};
 
+const DATA_LEN: usize = 1 + 4 * 3;
+
 /// # Generates bindings for batched calls to js functions. The generated code is a Channel struct with methods for each function.
 /// **The function calls to the generated methods are queued and only executed when flush is called.**
 ///
@@ -198,7 +200,7 @@ impl Parse for Bindings {
 }
 
 fn function_discriminant_size_bits(function_count: u32) -> usize {
-    let len = function_count as u32 + 1;
+    let len = function_count + 1;
     let bit_size = (32 - len.next_power_of_two().leading_zeros() as usize).saturating_sub(1);
     match bit_size {
         0..=4 => 4,
@@ -292,10 +294,11 @@ impl Bindings {
         let reads_per_u32 = (32 + (size - 1)) / size;
 
         let start = format!(
-            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z,{};{}{}export function create(r){{d=r;c=new TextDecoder('utf-8',{{fatal:true}})}}export function update_memory(r){{m=new DataView(r.buffer)}}export function set_buffer(b){{m=new DataView(b)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while(sp<e){{t=m.getUint32(sp,true);s+=String.fromCharCode(t&255,(t&65280)>>8,(t&16711680)>>16,t>>24);sp+=4}}while(sp<lss+sl){{s+=String.fromCharCode(m.getUint8(sp++));}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;z=0;while(z++<{}){{switch(op&{}){{{}}}}}"#,
+            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z,{};{}{}export function create(r){{d=r;c=new TextDecoder('utf-8',{{fatal:true}})}}export function run_from_buffer(b){{m=new DataView(b.buffer,b.byteOffset,b.byteLength);d=b.length-{};if(!c){{c=new TextDecoder('utf-8',{{fatal: true}})}}run();}}export function update_memory(b){{m=new DataView(b.buffer)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while(sp<e){{t=m.getUint32(sp,true);s+=String.fromCharCode(t&255,(t&65280)>>8,(t&16711680)>>16,t>>24);sp+=4}}while(sp<lss+sl){{s+=String.fromCharCode(m.getUint8(sp++));}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;z=0;while(z++<{}){{switch(op&{}){{{}}}}}"#,
             self.variables_js(),
             init_caches,
             initialize,
+            DATA_LEN,
             reads_per_u32,
             with_n_1_bits(op_size),
             self.functions
@@ -383,17 +386,19 @@ impl Bindings {
                     self.0 = i as u64;
                 }
             }
+            const DATA_LEN: usize = 1 + 4*3;
             // force the data to be packed so that we only need to send one pointer to js
-            static mut DATA: [u8; 1 + 4 + 4 + 4] = [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            static mut DATA: [u8; #DATA_LEN] = [255; DATA_LEN];
             static mut METADATA: *mut u8 = unsafe { DATA.as_mut_ptr() };
-            static mut DATA_PTR: *mut *const u8 = unsafe { DATA.as_mut_ptr().add(1).cast() };
-            static mut STR_PTR: *mut *const u8 = unsafe { DATA.as_mut_ptr().add(5).cast() };
-            static mut STR_LEN_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(9).cast() };
+            static mut DATA_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(1).cast() };
+            static mut STR_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(1+4).cast() };
+            static mut STR_LEN_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(1+4+4).cast() };
             static mut LAST_MEM_SIZE: usize = 0;
             #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
             extern "C" {
                 fn create(metadata_ptr: usize);
                 fn run();
+                fn run_from_buffer(buffer: &[u8]);
                 fn update_memory(memory: wasm_bindgen::JsValue);
                 #(#foreign_items)*
             }
@@ -492,47 +497,8 @@ impl Bindings {
                         self.encode_op(#end_msg);
                         let msg_ptr = self.msg.as_ptr();
                         let str_ptr = self.str_buffer.as_ptr();
-                        // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
-                        if unsafe { *METADATA } == 255 {
-                            // this is the first message, so we need to encode all the metadata
-                            unsafe {
-                                create(DATA.as_mut_ptr() as usize);
-                                *DATA_PTR = msg_ptr;
-                                *STR_PTR = str_ptr;
-                                *METADATA = 7;
-                            }
-                        } else {
-                            if unsafe { *DATA_PTR } != msg_ptr {
-                                unsafe {
-                                    *DATA_PTR = msg_ptr;
-                                    // the first bit encodes if the msg pointer has changed
-                                    *METADATA = 1;
-                                }
-                            } else {
-                                unsafe {
-                                    // the first bit encodes if the msg pointer has changed
-                                    *METADATA = 0;
-                                }
-                            }
-                            if unsafe { *STR_PTR } != str_ptr {
-                                unsafe {
-                                    *STR_PTR = str_ptr;
-                                    // the second bit encodes if the str pointer has changed
-                                    *METADATA |= 2;
-                                }
-                            }
-                        }
-                        unsafe {
-                            if !self.str_buffer.is_empty() {
-                                // the third bit encodes if there is any strings
-                                *METADATA |= 4;
-                                *STR_LEN_PTR = self.str_buffer.len() as u32;
-                                if *STR_LEN_PTR < 100 {
-                                    // the fourth bit encodes if the strings are entirely ascii and small
-                                    *METADATA |= (self.str_buffer.is_ascii() as u8) << 3;
-                                }
-                            }
-                        }
+                        self.update_metadata_ptrs(msg_ptr as u32, str_ptr as u32, self.str_buffer.len(), self.str_buffer.is_ascii());
+
                         let new_mem_size = core::arch::wasm32::memory_size(0);
                         unsafe{
                             // we need to update the memory if the memory has grown
@@ -548,6 +514,65 @@ impl Bindings {
                         self.str_buffer.clear();
                         self.msg.clear();
                     }
+                }
+
+                fn update_metadata_ptrs(&mut self, msg_ptr: u32, str_ptr: u32, str_len: usize, str_all_ascii: bool) {
+                    // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
+                    if unsafe { *METADATA } == 255 {
+                        // this is the first message, so we need to encode all the metadata
+                        unsafe {
+                            #[cfg(target_family = "wasm")]
+                            create(DATA.as_mut_ptr() as usize);
+                            *DATA_PTR = msg_ptr;
+                            *STR_PTR = str_ptr;
+                            *METADATA = 7;
+                        }
+                    } else {
+                        if unsafe { *DATA_PTR } != msg_ptr {
+                            unsafe {
+                                *DATA_PTR = msg_ptr;
+                                // the first bit encodes if the msg pointer has changed
+                                *METADATA = 1;
+                            }
+                        } else {
+                            unsafe {
+                                // the first bit encodes if the msg pointer has changed
+                                *METADATA = 0;
+                            }
+                        }
+                        if unsafe { *STR_PTR } != str_ptr {
+                            unsafe {
+                                *STR_PTR = str_ptr;
+                                // the second bit encodes if the str pointer has changed
+                                *METADATA |= 2;
+                            }
+                        }
+                    }
+                    unsafe {
+                        if str_len != 0 {
+                            // the third bit encodes if there is any strings
+                            *METADATA |= 4;
+                            *STR_LEN_PTR = str_len as u32;
+                            if *STR_LEN_PTR < 100 {
+                                // the fourth bit encodes if the strings are entirely ascii and small
+                                *METADATA |= (str_all_ascii as u8) << 3;
+                            }
+                        }
+                    }
+                }
+
+                fn to_bytes(&mut self) -> Vec<u8> {
+                    self.encode_op(#end_msg);
+                    let str_len = self.str_buffer.len();
+                    let str_all_ascii = self.str_buffer.is_ascii();
+                    let mut bytes = self.msg.split_off(0);
+                    let string_start = bytes.len();
+                    bytes.append(&mut self.str_buffer.split_off(0));
+                    self.update_metadata_ptrs(0, string_start as u32, str_len, str_all_ascii);
+                    bytes.extend_from_slice(unsafe{&DATA});
+                    self.current_op_batch_idx = 0;
+                    self.current_op_byte_idx = #reads_per_u32;
+                    bytes
                 }
 
                 #(#methods)*
@@ -1249,7 +1274,7 @@ impl Number {
     }
 
     fn encode(&self, name: &Ident) -> TokenStream2 {
-        let len_byte_size = self.size() as usize;
+        let len_byte_size = self.size();
         let encode_write = self.encode_write(name);
         quote! {
             #encode_write
