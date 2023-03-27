@@ -398,12 +398,72 @@ impl Bindings {
             }
             const DATA_LEN: usize = 1 + 4*3;
             // force the data to be packed so that we only need to send one pointer to js
-            static mut DATA: [u8; #DATA_LEN] = [255; DATA_LEN];
-            static mut METADATA: *mut u8 = unsafe { DATA.as_mut_ptr() };
-            static mut DATA_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(1).cast() };
-            static mut STR_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(1+4).cast() };
-            static mut STR_LEN_PTR: *mut u32 = unsafe { DATA.as_mut_ptr().add(1+4+4).cast() };
-            static mut LAST_MEM_SIZE: usize = 0;
+            // layout: [u8 metadata, u32 data_ptr, u32 str_ptr, u32 str_len_ptr]
+            static mut RAW_DATA: [u8; DATA_LEN] = [255; DATA_LEN];
+            static mut RAW_DATA_PTR: *const [u8; DATA_LEN] = unsafe { &RAW_DATA };
+            static DATA: std::sync::Mutex<()> = unsafe{ std::sync::Mutex::new(()) };
+            fn with_data_mut<O>(f: impl FnOnce(&mut [u8; DATA_LEN]) -> O) -> O {
+                let mut data = DATA.lock().unwrap();
+                // SAFETY: we only access the data through the mutex, so we know that it is valid
+                unsafe {
+                    f(&mut RAW_DATA)
+                }
+            }
+            fn get_metadata() -> u8 {
+                with_data_mut(|data| data[0])
+            }
+            fn set_metadata(metadata: u8) {
+                with_data_mut(|data| data[0] = metadata);
+            }
+            fn get_data_ptr() -> u32 {
+                use std::convert::TryInto;
+                with_data_mut(|data| {
+                    // SAFETY: we know that the data is 4 bytes long
+                    unsafe {
+                        u32::from_le_bytes(data[1..5].try_into().unwrap_unchecked())
+                    }
+                })
+            }
+            fn set_data_ptr(ptr: u32) {
+                with_data_mut(|data| {
+                    data[1..5].copy_from_slice(&ptr.to_le_bytes());
+                })
+            }
+            fn get_str_ptr() -> u32 {
+                use std::convert::TryInto;
+                with_data_mut(|data| {
+                    unsafe{
+                        // SAFETY: we know that the data is 4 bytes long
+                        u32::from_le_bytes(data[1+4..1+4+4].try_into().unwrap_unchecked())
+                    }
+                })
+            }
+            fn set_str_ptr(ptr: u32) {
+                with_data_mut(|data| {
+                    data[1+4..1+4+4].copy_from_slice(&ptr.to_le_bytes());
+                })
+            }
+            fn get_str_len() -> u32 {
+                use std::convert::TryInto;
+                with_data_mut(|data| {
+                    unsafe{
+                        // SAFETY: we know that the data is 4 bytes long
+                        u32::from_le_bytes(data[1+4+4..1+4+4+4].try_into().unwrap_unchecked())
+                    }
+                })
+            }
+            fn set_str_len(len: u32) {
+                with_data_mut(|data| {
+                    data[1+4+4..1+4+4+4].copy_from_slice(&len.to_le_bytes());
+                })
+            }
+            static LAST_MEM_SIZE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            fn set_last_mem_size(size: usize) {
+                LAST_MEM_SIZE.store(size, std::sync::atomic::Ordering::SeqCst);
+            }
+            fn get_last_mem_size() -> usize {
+                LAST_MEM_SIZE.load(std::sync::atomic::Ordering::SeqCst)
+            }
             #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
             extern "C" {
                 fn create(metadata_ptr: usize);
@@ -434,19 +494,16 @@ impl Bindings {
             4 => {
                 quote! {
                     if self.current_op_byte_idx % 2 == 0 {
-                        *self.msg.as_mut_ptr()
-                            .add(self.current_op_batch_idx + self.current_op_byte_idx / 2) = op;
+                        *self.msg.get_unchecked_mut(self.current_op_batch_idx + self.current_op_byte_idx / 2) = op;
                     } else {
-                        *self.msg.as_mut_ptr()
-                            .add(self.current_op_batch_idx + self.current_op_byte_idx / 2) |= op << 4;
+                        *self.msg.get_unchecked_mut(self.current_op_batch_idx + self.current_op_byte_idx / 2) |= op << 4;
                     }
                     self.current_op_byte_idx += 1;
                 }
             }
             8 => {
                 quote! {
-                    *self.msg.as_mut_ptr()
-                            .add(self.current_op_batch_idx + self.current_op_byte_idx) = op;
+                    *self.msg.get_unchecked_mut(self.current_op_batch_idx + self.current_op_byte_idx) = op;
                     self.current_op_byte_idx += 1;
                 }
             }
@@ -494,13 +551,15 @@ impl Bindings {
 
                 #[allow(clippy::uninit_vec)]
                 fn encode_op(&mut self, op: u8) {
-                    unsafe{
+                    unsafe {
+                        // SAFETY: this creates 4 bytes of uninitialized memory that will be immediately written to when we encode the operation in the next step
                         if self.current_op_byte_idx >= #reads_per_u32 {
                             self.current_op_batch_idx = self.msg.len();
                             self.msg.reserve(4);
                             self.msg.set_len(self.msg.len() + 4);
                             self.current_op_byte_idx = 0;
                         }
+                        // SAFETY: we just have checked that there is enough space in the vector to index into it
                         #encode_op
                     }
                 }
@@ -514,12 +573,10 @@ impl Bindings {
                         self.update_metadata_ptrs(msg_ptr as u32, str_ptr as u32, self.str_buffer.len(), self.str_buffer.is_ascii());
 
                         let new_mem_size = core::arch::wasm32::memory_size(0);
-                        unsafe{
-                            // we need to update the memory if the memory has grown
-                            if new_mem_size != LAST_MEM_SIZE {
-                                LAST_MEM_SIZE = new_mem_size;
-                                update_memory(wasm_bindgen::memory());
-                            }
+                        // we need to update the memory if the memory has grown
+                        if new_mem_size != get_last_mem_size() {
+                            set_last_mem_size(new_mem_size);
+                            update_memory(wasm_bindgen::memory());
                         }
 
                         run();
@@ -532,45 +589,38 @@ impl Bindings {
 
                 fn update_metadata_ptrs(&mut self, msg_ptr: u32, str_ptr: u32, str_len: usize, str_all_ascii: bool) {
                     // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
-                    if unsafe { *METADATA } == 255 {
+                    if get_metadata() == 255 {
                         // this is the first message, so we need to encode all the metadata
-                        unsafe {
-                            #[cfg(target_family = "wasm")]
-                            create(DATA.as_mut_ptr() as usize);
-                            *DATA_PTR = msg_ptr;
-                            *STR_PTR = str_ptr;
-                            *METADATA = 7;
+                        #[cfg(target_family = "wasm")]
+                        unsafe{
+                            // SAFETY: RAW_DATA is currently initialized and we will not write to it while javascript is reading from it
+                            create(RAW_DATA_PTR as usize);
                         }
+                        set_data_ptr(msg_ptr);
+                        set_str_ptr(str_ptr);
+                        set_metadata(7);
                     } else {
-                        if unsafe { *DATA_PTR } != msg_ptr {
-                            unsafe {
-                                *DATA_PTR = msg_ptr;
-                                // the first bit encodes if the msg pointer has changed
-                                *METADATA = 1;
-                            }
+                        if get_data_ptr() != msg_ptr {
+                            set_data_ptr(msg_ptr);
+                            // the first bit encodes if the msg pointer has changed
+                            set_metadata(1);
                         } else {
-                            unsafe {
-                                // the first bit encodes if the msg pointer has changed
-                                *METADATA = 0;
-                            }
+                            // the first bit encodes if the msg pointer has changed
+                            set_metadata(0);
                         }
-                        if unsafe { *STR_PTR } != str_ptr {
-                            unsafe {
-                                *STR_PTR = str_ptr;
-                                // the second bit encodes if the str pointer has changed
-                                *METADATA |= 2;
-                            }
+                        if get_str_ptr() != str_ptr {
+                            set_str_ptr(str_ptr);
+                            // the second bit encodes if the str pointer has changed
+                            set_metadata(get_metadata() | 2);
                         }
                     }
-                    unsafe {
-                        if str_len != 0 {
-                            // the third bit encodes if there is any strings
-                            *METADATA |= 4;
-                            *STR_LEN_PTR = str_len as u32;
-                            if *STR_LEN_PTR < 100 {
-                                // the fourth bit encodes if the strings are entirely ascii and small
-                                *METADATA |= (str_all_ascii as u8) << 3;
-                            }
+                    if str_len != 0 {
+                        // the third bit encodes if there is any strings
+                        set_metadata(get_metadata() | 4);
+                        set_str_len(str_len as u32);
+                        if get_str_len() < 100 {
+                            // the fourth bit encodes if the strings are entirely ascii and small
+                            set_metadata(get_metadata() | ((str_all_ascii as u8) << 3));
                         }
                     }
                 }
@@ -583,7 +633,10 @@ impl Bindings {
                     let string_start = bytes.len();
                     bytes.append(&mut self.str_buffer.split_off(0));
                     self.update_metadata_ptrs(0, string_start as u32, str_len, str_all_ascii);
-                    bytes.extend_from_slice(unsafe{&DATA});
+                    // SAFETY: we know that the data is valid because we only access it through the mutex
+                    with_data_mut(|data|{
+                        bytes.extend_from_slice(data);
+                    });
                     self.current_op_batch_idx = 0;
                     self.current_op_byte_idx = #reads_per_u32;
                     bytes
@@ -866,7 +919,8 @@ impl FunctionBinding {
             pub fn #name(&mut self, #(#args: #types),*) {
                 self.encode_op(#index);
                 #reserve
-                unsafe{
+                unsafe {
+                    // SAFETY: we just reserved enough space for all the types we are about to write so we can write them without checking the capacity
                     #(
                         #encode_types;
                     )*
@@ -1388,11 +1442,12 @@ impl Str {
         let write_len = self.size_type.encode(&char_len);
         let len_byte_size = self.size_type.size();
         let encode = quote! {
+            let #len = #name.len();
+            let #char_len: usize = #name.chars().map(|c| c.len_utf16()).sum();
+            #write_len
+            let old_len = self.str_buffer.len();
             unsafe {
-                let #len = #name.len();
-                let #char_len: usize = #name.chars().map(|c| c.len_utf16()).sum();
-                #write_len
-                let old_len = self.str_buffer.len();
+                // SAFETY: We reserve uninitialized memory but then immediately write to it to make it initialized
                 self.str_buffer.reserve(#len);
                 self.str_buffer.set_len(old_len + #len);
                 __copy(#name.as_bytes(), &mut self.str_buffer[old_len..], #len);
@@ -1410,7 +1465,8 @@ impl Str {
                         }
                         else {
                             *self.msg.as_mut_ptr().add(self.msg.len()) = _id;
-                            unsafe{
+                            unsafe {
+                                // SAFETY: Increase the length by the size of _id (u8) and the type of the length of the string
                                 self.msg.set_len(self.msg.len() + #len_byte_size + 1);
                             }
                         }
@@ -1419,7 +1475,8 @@ impl Str {
                     quote! {
                         if let Some(&id) = #cache.get(#name){
                             *self.msg.as_mut_ptr().add(self.msg.len()) = id;
-                            unsafe{
+                            unsafe {
+                                // SAFETY: Increase the length by the size of _id (u8) and the type of the length of the string
                                 self.msg.set_len(self.msg.len() + #len_byte_size + 1);
                             }
                         }
