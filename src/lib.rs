@@ -62,7 +62,7 @@ use syn::{ForeignItemFn, ItemFn, TypeParamBound};
 
 const DATA_LEN: usize = 1 + 4 * 3;
 
-/// # Generates bindings for batched calls to js functions. The generated code is a Channel struct with methods for each function.
+/// # Generates bindings for batched calls to js functions. The generated code is a Buffer struct with methods for each function.
 /// **The function calls to the generated methods are queued and only executed when flush is called.**
 ///
 /// Some of the code generated uses the `sledgehammer_utils` crate, so you need to add that crate as a dependency.
@@ -70,8 +70,10 @@ const DATA_LEN: usize = 1 + 4 * 3;
 /// ```rust, ignore
 /// #[bindgen]
 /// mod js {
-///     // initialize is a special function that is called when the js is initialized. It can be used to set up the js environment.
-///     // this is the js code that is executed when the js is loaded.
+///     // You can define a struct to hold the data for the batched calls.
+///     struct Buffer;
+///
+///     // JS is a special constatant that defines initialization javascript. It can be used to set up the js environment and define the code that wasm-bindgen binds to.
 ///     const JS: &str = r#"
 ///         const text = ["hello"];
 ///
@@ -124,8 +126,8 @@ const DATA_LEN: usize = 1 + 4 * 3;
 ///     }
 /// }
 ///
-/// let mut channel1 = Channel::default();
-/// let mut channel2 = Channel::default();
+/// let mut channel1 = Buffer::default();
+/// let mut channel2 = Buffer::default();
 /// channel1.takes_strings("hello", "world");
 /// channel1.takes_numbers(1, 2, u24::new(3), 4);
 /// channel1.takes_cachable_strings("hello", "world");
@@ -148,6 +150,7 @@ pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
 
 #[derive(Debug)]
 struct Bindings {
+    buffer: Ident,
     functions: Vec<FunctionBinding>,
     foreign_items: Vec<ForeignItemFn>,
     intialize: Option<String>,
@@ -157,6 +160,7 @@ impl Parse for Bindings {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let extren_block = syn::ItemMod::parse(input)?;
 
+        let mut buffer = None;
         let mut functions = Vec::new();
         let mut foreign_items = Vec::new();
         let mut intialize = None;
@@ -187,11 +191,15 @@ impl Parse for Bindings {
                         }
                     }
                 }
+                syn::Item::Struct(strct) => {
+                    buffer = Some(strct.ident);
+                }
                 _ => panic!("only functions are supported"),
             }
         }
 
         Ok(Bindings {
+            buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
             foreign_items,
             intialize,
@@ -364,6 +372,8 @@ impl Bindings {
                     }
                 }
             });
+
+        let ty = &self.buffer;
         quote! {
             struct NonHashBuilder;
             impl std::hash::BuildHasher for NonHashBuilder {
@@ -398,8 +408,8 @@ impl Bindings {
             extern "C" {
                 fn create(metadata_ptr: usize);
                 fn run();
-                /// Runs the serialized message provided
-                /// To create a serialized message, use the [`Channel::to_bytes`] method
+                #[doc = concat!("Runs the serialized message provided")]
+                #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
                 pub fn run_from_buffer(buffer: &[u8]);
                 fn update_memory(memory: wasm_bindgen::JsValue);
                 #(#foreign_items)*
@@ -442,20 +452,22 @@ impl Bindings {
             }
             _ => panic!("unsupported size"),
         };
+
+        let ty = &self.buffer;
         quote! {
             fn __copy(src: &[u8], dst: &mut [u8], len: usize) {
                 for (m, i) in dst.iter_mut().zip(src.iter().take(len)) {
                     *m = *i;
                 }
             }
-            pub struct Channel {
+            pub struct #ty {
                 msg: Vec<u8>,
                 str_buffer: Vec<u8>,
                 current_op_batch_idx: usize,
                 current_op_byte_idx: usize,
             }
 
-            impl Default for Channel {
+            impl Default for #ty {
                 fn default() -> Self {
                     Self {
                         msg: Vec::new(),
@@ -466,7 +478,7 @@ impl Bindings {
                 }
             }
 
-            impl Channel {
+            impl #ty {
                 pub fn append(&mut self, mut batch: Self) {
                     // add empty operations to the batch to make sure the batch is aligned
                     let operations_left = #reads_per_u32 - self.current_op_byte_idx;

@@ -3,6 +3,8 @@ use web_sys::{console, Node};
 
 #[bindgen]
 mod js {
+    struct Channel;
+
     const JS: &str = r#"const nodes = [document.getElementById("main")];
     export function get_node(id){
         return nodes[id];
