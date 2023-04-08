@@ -60,7 +60,8 @@ use syn::{
 };
 use syn::{ForeignItemFn, ItemFn, TypeParamBound};
 
-const DATA_LEN: usize = 1 + 4 * 3;
+mod builder;
+mod types;
 
 /// # Generates bindings for batched calls to js functions. The generated code is a Buffer struct with methods for each function.
 /// **The function calls to the generated methods are queued and only executed when flush is called.**
@@ -89,12 +90,12 @@ const DATA_LEN: usize = 1 + 4 * 3;
 ///         fn get(id: u32) -> String;
 ///     }
 ///
-///     // valid number types are u8, u16, u24, u32. u24 is defined in the ux crate.
-///     fn takes_numbers(n1: u8, n2: u16, n3: u24, n4: u32) {
+///     // valid number types are u8, u16, u32.
+///     fn takes_numbers(n1: u8, n2: u16, n3: u32) {
 ///         // this is the js code that is executed when takes_numbers is called.
 ///         // dollar signs around the arguments mark that the arguments are safe to inline (they only appear once).
 ///         // you can escape dollar signs with a backslash.
-///         r#"console.log($n1$, $n2$, $n3$, $n4$, "\$");"#
+///         r#"console.log($n1$, $n2$, $n3$, "\$");"#
 ///     }
 ///
 ///     // valid string types are &str<u8>, &str<u16>, &str<u32>.
@@ -129,7 +130,7 @@ const DATA_LEN: usize = 1 + 4 * 3;
 /// let mut channel1 = Buffer::default();
 /// let mut channel2 = Buffer::default();
 /// channel1.takes_strings("hello", "world");
-/// channel1.takes_numbers(1, 2, u24::new(3), 4);
+/// channel1.takes_numbers(1, 2, 3);
 /// channel1.takes_cachable_strings("hello", "world");
 /// channel1.takes_cachable_strings("hello", "world");
 /// channel1.takes_cachable_strings("hello", "world");
@@ -240,10 +241,6 @@ impl Read {
         s.push_str("i=");
         read_size(len, s);
         s.push(';');
-        // you can't read 3 bytes at once round up to 4
-        if len == 3 {
-            len = 4;
-        }
         Self { size: len, pos: 0 }
     }
 }
@@ -282,29 +279,67 @@ impl Bindings {
     fn js(&mut self) -> String {
         let op_size = function_discriminant_size_bits(self.functions.len() as u32);
         let initialize = self.intialize.as_deref().unwrap_or_default();
-        let cache_names: HashSet<&Ident> = self
-            .functions
-            .iter()
-            .flat_map(|f| {
-                f.args.iter().filter_map(|(_, ty)| match ty {
-                    SupportedTypes::SimpleTypes(SimpleTypes::Str(s)) => s.cache_name.as_ref(),
-                    _ => None,
-                })
-            })
-            .collect();
-        let init_caches = cache_names
-            .iter()
-            .map(|name| format!("const {} = [];", name))
-            .collect::<String>();
 
         let size = function_discriminant_size_bits(self.functions.len() as u32);
         assert!(size <= 8);
         let reads_per_u32 = (32 + (size - 1)) / size;
 
         let start = format!(
-            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z,{};{}{}export function create(r){{d=r;c=new TextDecoder('utf-8',{{fatal:true}})}}export function run_from_buffer(b){{m=new DataView(b.buffer,b.byteOffset,b.byteLength);d=b.length-{};if(!c){{c=new TextDecoder('utf-8',{{fatal: true}})}}run();}}export function update_memory(b){{m=new DataView(b.buffer)}}export function run(){{t=m.getUint8(d,true);if(t&1){{ls=m.getUint32(d+1,true)}}p=ls;if(t&2){{lss=m.getUint32(d+5,true)}}if(t&4){{sl=m.getUint32(d+9,true);if(t&8){{sp=lss;s="";e=sp+(sl/4|0)*4;while(sp<e){{t=m.getUint32(sp,true);s+=String.fromCharCode(t&255,(t&65280)>>8,(t&16711680)>>16,t>>24);sp+=4}}while(sp<lss+sl){{s+=String.fromCharCode(m.getUint8(sp++));}}}}else{{s=c.decode(new DataView(m.buffer,lss,sl))}}sp=0}}for(;;){{op=m.getUint32(p,true);p+=4;z=0;while(z++<{}){{switch(op&{}){{{}}}}}"#,
-            self.variables_js(),
-            init_caches,
+            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z;
+            {}
+            export function create(r){{
+                d=r;
+                c=new TextDecoder('utf-8',{{fatal:true}})
+            }}
+            export function run_from_buffer(b){{
+                m=new DataView(b.buffer,b.byteOffset,b.byteLength);
+                d=b.length-{};
+                if(!c){{
+                    c=new TextDecoder('utf-8',{{fatal: true}})
+                }}
+                run();
+            }}
+            export function update_memory(b){{
+                m=new DataView(b.buffer)
+            }}
+            export function run(){{
+                t=m.getUint8(d,true);
+                if(t&1){{
+                    ls=m.getUint32(d+1,true)
+                }}
+                p=ls;
+                if(t&2){{
+                    lss=m.getUint32(d+5,true)
+                }}
+                if(t&4){{
+                    sl=m.getUint32(d+9,true);
+                    if(t&8){{
+                        sp=lss;
+                        s="";
+                        e=sp+(sl/4|0)*4;
+                        while(sp<e){{
+                            t=m.getUint32(sp,true);
+                            s+=String.fromCharCode(t&255,(t&65280)>>8,(t&16711680)>>16,t>>24);
+                            sp+=4
+                        }}
+                        while(sp<lss+sl){{
+                            s+=String.fromCharCode(m.getUint8(sp++));
+                        }}
+                    }}
+                    else{{
+                        s=c.decode(new DataView(m.buffer,lss,sl))
+                    }}
+                    sp=0
+                }}
+                for(;;){{
+                    op=m.getUint32(p,true);
+                    p+=4;
+                    z=0;
+                    while(z++<{}){{
+                        switch(op&{}){{
+                            {}
+                }}
+            }}"#,
             initialize,
             DATA_LEN,
             reads_per_u32,
@@ -713,10 +748,8 @@ fn parse_body() {
 #[derive(Debug)]
 struct FunctionBinding {
     name: Ident,
-    args: Vec<(Ident, SupportedTypes)>,
+    args: Vec<(Ident, Type)>,
     body: JsBody,
-    bins: Vec<Bin<(Ident, SupportedTypes)>>,
-    remaining: Vec<(Ident, SupportedTypes)>,
 }
 
 impl FunctionBinding {
@@ -734,7 +767,7 @@ impl FunctionBinding {
                     } else {
                         panic!("only simple idents are supported")
                     };
-                    (ident, SupportedTypes::from(&*ty.ty))
+                    (ident, ty.ty.deref().clone())
                 }
             })
             .collect();
@@ -750,149 +783,13 @@ impl FunctionBinding {
         };
         let body = parse_js_body(&body);
 
-        Self {
-            name,
-            args,
-            body,
-            bins: Vec::new(),
-            remaining: Vec::new(),
-        }
+        Self { name, args, body }
     }
 
     fn js(&mut self) -> String {
         let args = self.args.clone();
-        let (bins, remaining) = pack(args, 4);
 
-        self.bins = bins;
-        // move the bin with the most inlinable variables to the end
-        let mut most_inlinable_idx = None;
-        let mut most_inlinable_count = 0;
-        for (i, bin) in self.bins.iter().enumerate() {
-            let inlinable_count = bin
-                .filled
-                .iter()
-                .map(|entry| {
-                    if entry.item.1.inlinable() {
-                        self.body
-                            .segments
-                            .iter()
-                            .filter(|(_, param)| entry.item.0 == param)
-                            .count()
-                    } else {
-                        0
-                    }
-                })
-                .sum();
-            if most_inlinable_idx.is_none() || inlinable_count > most_inlinable_count {
-                most_inlinable_count = inlinable_count;
-                most_inlinable_idx = Some(i);
-            }
-        }
-        if let Some(idx) = most_inlinable_idx {
-            let len = self.bins.len();
-            self.bins.swap(idx, len - 1);
-        }
-        self.remaining = remaining;
-
-        let mut s = String::new();
-        for (name, ty) in &self.remaining {
-            s += &ty.js_inlined(name.to_string());
-        }
-        for b in &self.bins[..self.bins.len().saturating_sub(1)] {
-            s += &b.js();
-        }
-
-        // we can inline variables from the last bin
-        if let Some(last_bin) = self.bins.last_mut() {
-            if let &[BinEntry {
-                item: (name, SupportedTypes::SimpleTypes(ty)),
-            }] = &last_bin.filled.as_slice()
-            {
-                // the read can also be inlined
-                if self.body.segments.iter().any(|(_, param)| name == param) {
-                    if let Some(get) = ty.js_get_inlined() {
-                        for (segment, param) in &self.body.segments {
-                            s += segment;
-                            if name == param {
-                                s += &get;
-                            } else {
-                                s += param;
-                            }
-                        }
-                        s += &self.body.trailing;
-                        s += "p+=";
-                        s += &ty.min_size().to_string();
-                        s += ";";
-                        return s;
-                    }
-                }
-            }
-
-            // we need to shuffle the data so that the strings are read in the same order as they are written
-            let mut new_last_bin_filled = Vec::new();
-
-            let mut read = Read::new(&mut s, last_bin.position);
-            // first insert any non inlinable parameters
-            let mut i = 0;
-            'o: while i < last_bin.filled.len() {
-                let entry = &last_bin.filled[i];
-                let (name, ty) = &entry.item;
-                let mut matched = false;
-                for (_, param) in &self.body.segments {
-                    if name == param {
-                        if !ty.inlinable() {
-                            s += &ty.js(name.to_string(), &mut read);
-                            new_last_bin_filled.push(last_bin.filled.remove(i));
-                            continue 'o;
-                        }
-                        matched = true;
-                    }
-                }
-                if !matched {
-                    s += &ty.js(name.to_string(), &mut read);
-                    new_last_bin_filled.push(last_bin.filled.remove(i));
-                    continue;
-                }
-                i += 1;
-            }
-
-            // fill in the remaining inlinable parameters
-            for (segment, param) in &self.body.segments {
-                s += segment;
-                let mut inlined = false;
-                let mut i = 0;
-                while i < last_bin.filled.len() {
-                    let entry = &last_bin.filled[i];
-                    let (name, ty) = &entry.item;
-                    if name == param {
-                        if let Some(get) = ty.js_get(&mut read) {
-                            s += &get;
-                            inlined = true;
-                            new_last_bin_filled.push(last_bin.filled.remove(i));
-                            break;
-                        }
-                    }
-                    i += 1;
-                }
-                if !inlined {
-                    s += param;
-                }
-            }
-            s += &self.body.trailing;
-            s += "p+=";
-            s += &last_bin.position.to_string();
-            s += ";";
-
-            last_bin.filled = new_last_bin_filled;
-        } else {
-            for (segment, param) in &self.body.segments {
-                s += segment;
-                s += param;
-            }
-            s += &self.body.trailing;
-        }
-
-        s
+        todo!()
     }
 
     fn to_tokens(&self, index: u8) -> TokenStream2 {
@@ -928,759 +825,4 @@ impl FunctionBinding {
             }
         }
     }
-}
-
-#[derive(Debug, Clone)]
-#[allow(unused)]
-enum SupportedTypes {
-    Optional(SimpleTypes),
-    SimpleTypes(SimpleTypes),
-}
-
-impl SupportedTypes {
-    fn read_from_u32(&self) -> bool {
-        match self {
-            SupportedTypes::Optional(t) => t.read_from_u32(),
-            SupportedTypes::SimpleTypes(t) => t.read_from_u32(),
-        }
-    }
-
-    fn inlinable(&self) -> bool {
-        match self {
-            SupportedTypes::Optional(t) => t.inlinable(),
-            SupportedTypes::SimpleTypes(t) => t.inlinable(),
-        }
-    }
-
-    fn min_size(&self) -> usize {
-        match self {
-            SupportedTypes::Optional(t) => t.min_size() + 1,
-            SupportedTypes::SimpleTypes(t) => t.min_size(),
-        }
-    }
-
-    fn js(&self, parameter: String, read: &mut Read) -> String {
-        match self {
-            SupportedTypes::Optional(_) => todo!(),
-            SupportedTypes::SimpleTypes(t) => t.js(parameter, read),
-        }
-    }
-
-    fn js_inlined(&self, parameter: String) -> String {
-        match self {
-            SupportedTypes::Optional(_) => todo!(),
-            SupportedTypes::SimpleTypes(t) => t.js_inlined(parameter),
-        }
-    }
-
-    fn js_get(&self, read: &mut Read) -> Option<String> {
-        match self {
-            SupportedTypes::Optional(_) => todo!(),
-            SupportedTypes::SimpleTypes(t) => t.js_get(read),
-        }
-    }
-
-    fn to_tokens(&self) -> TokenStream2 {
-        match self {
-            SupportedTypes::Optional(t) => {
-                let t = t.to_tokens();
-                quote! {
-                    Option<#t>
-                }
-            }
-            SupportedTypes::SimpleTypes(t) => t.to_tokens(),
-        }
-    }
-
-    fn encode(&self, name: &Ident) -> TokenStream2 {
-        match self {
-            SupportedTypes::Optional(_) => {
-                todo!()
-            }
-            SupportedTypes::SimpleTypes(t) => t.encode(name),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-enum SimpleTypes {
-    Number(Number),
-    Slice(Slice),
-    Str(Str),
-    Writable(Writable),
-}
-
-impl SimpleTypes {
-    fn read_from_u32(&self) -> bool {
-        match self {
-            SimpleTypes::Number(_) => true,
-            SimpleTypes::Slice(_) => false,
-            SimpleTypes::Str(_) => true,
-            SimpleTypes::Writable(_) => true,
-        }
-    }
-
-    fn inlinable(&self) -> bool {
-        match self {
-            SimpleTypes::Number(_) => true,
-            SimpleTypes::Slice(_) => false,
-            SimpleTypes::Str(s) => s.inlinable(),
-            SimpleTypes::Writable(_) => true,
-        }
-    }
-
-    fn min_size(&self) -> usize {
-        match self {
-            SimpleTypes::Number(n) => n.size(),
-            SimpleTypes::Slice(s) => s.min_size(),
-            SimpleTypes::Str(s) => s.min_size(),
-            SimpleTypes::Writable(w) => w.min_size(),
-        }
-    }
-
-    fn js(&self, parameter: String, read: &mut Read) -> String {
-        match self {
-            SimpleTypes::Number(n) => n.js(parameter, read),
-            SimpleTypes::Slice(_) => panic!("not supported"),
-            SimpleTypes::Str(s) => s.js(parameter, read),
-            SimpleTypes::Writable(w) => w.js(parameter, read),
-        }
-    }
-
-    fn js_inlined(&self, parameter: String) -> String {
-        match self {
-            SimpleTypes::Number(n) => n.js_inlined(parameter),
-            SimpleTypes::Slice(s) => s.js_inlined(parameter),
-            SimpleTypes::Str(s) => s.js_inlined(parameter),
-            SimpleTypes::Writable(w) => w.js_inlined(parameter),
-        }
-    }
-
-    fn js_get_inlined(&self) -> Option<String> {
-        match self {
-            SimpleTypes::Number(n) => Some(n.js_get_inlined()),
-            SimpleTypes::Slice(_) => None,
-            SimpleTypes::Str(s) => s.js_get_inlined(),
-            SimpleTypes::Writable(w) => Some(w.js_get_inlined()),
-        }
-    }
-
-    fn js_get(&self, read: &mut Read) -> Option<String> {
-        match self {
-            SimpleTypes::Number(n) => Some(n.js_get(read)),
-            SimpleTypes::Slice(_) => None,
-            SimpleTypes::Str(s) => s.js_get(read),
-            SimpleTypes::Writable(w) => Some(w.js_get(read)),
-        }
-    }
-
-    fn to_tokens(&self) -> TokenStream2 {
-        match self {
-            SimpleTypes::Number(n) => n.to_tokens(),
-            SimpleTypes::Slice(s) => s.to_tokens(),
-            SimpleTypes::Str(s) => s.to_tokens(),
-            SimpleTypes::Writable(w) => w.to_tokens(),
-        }
-    }
-
-    fn encode(&self, name: &Ident) -> TokenStream2 {
-        match self {
-            SimpleTypes::Number(n) => n.encode(name),
-            SimpleTypes::Slice(s) => s.encode(name),
-            SimpleTypes::Str(s) => s.encode(name),
-            SimpleTypes::Writable(w) => w.encode(name),
-        }
-    }
-}
-
-impl<'a> From<&'a Type> for SupportedTypes {
-    fn from(ty: &'a Type) -> Self {
-        if let Type::Path(segments) = ty {
-            let segments: Vec<_> = segments.path.segments.iter().collect();
-            if let &[simple] = segments.as_slice() {
-                let as_str = simple.ident.to_string();
-                return SupportedTypes::SimpleTypes(SimpleTypes::Number(match as_str.as_str() {
-                    "u8" => Number::U8,
-                    "u16" => Number::U16,
-                    "u24" => Number::U24,
-                    "u32" => Number::U32,
-                    _ => panic!("unsupported type"),
-                }));
-            }
-        } else if let Type::Reference(ty) = ty {
-            if let Type::Path(segments) = &*ty.elem {
-                let segments: Vec<_> = segments.path.segments.iter().collect();
-                if let &[simple] = segments.as_slice() {
-                    let as_str = simple.ident.to_string();
-                    if as_str == "str" {
-                        if let PathArguments::AngleBracketed(gen) = &simple.arguments {
-                            let generics: Vec<_> = gen.args.iter().collect();
-                            if let GenericArgument::Type(Type::Path(t)) = &generics[0] {
-                                let segments: Vec<_> = t.path.segments.iter().collect();
-                                if let &[simple] = segments.as_slice() {
-                                    let mut cache = None;
-                                    if let Some(GenericArgument::Type(Type::Path(t))) =
-                                        &generics.get(1)
-                                    {
-                                        let segments: Vec<_> = t.path.segments.iter().collect();
-                                        if let &[simple] = segments.as_slice() {
-                                            cache = Some(simple.ident.clone());
-                                        }
-                                    }
-                                    return SupportedTypes::SimpleTypes(SimpleTypes::Str(Str {
-                                        size_type: match simple.ident.to_string().as_str() {
-                                            "u8" => Number::U8,
-                                            "u16" => Number::U16,
-                                            "u24" => Number::U24,
-                                            "u32" => Number::U32,
-                                            _ => panic!("unsupported type"),
-                                        },
-                                        cache_name: cache,
-                                        static_str: ty
-                                            .lifetime
-                                            .as_ref()
-                                            .filter(|l| l.ident == "static")
-                                            .is_some(),
-                                    }));
-                                }
-                            }
-                        }
-                        return SupportedTypes::SimpleTypes(SimpleTypes::Str(Str {
-                            size_type: Number::U32,
-                            cache_name: None,
-                            static_str: ty
-                                .lifetime
-                                .as_ref()
-                                .filter(|l| l.ident == "static")
-                                .is_some(),
-                        }));
-                    }
-                }
-            }
-            if let Type::Slice(slice) = &*ty.elem {
-                if let Type::Path(segments) = &*slice.elem {
-                    let segments: Vec<_> = segments.path.segments.iter().collect();
-                    if let &[simple] = segments.as_slice() {
-                        let as_str = simple.ident.to_string();
-                        if let PathArguments::AngleBracketed(gen) = &simple.arguments {
-                            let generics: Vec<_> = gen.args.iter().collect();
-                            if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
-                                let segments: Vec<_> = t.path.segments.iter().collect();
-                                if let &[simple] = segments.as_slice() {
-                                    let size = match simple.ident.to_string().as_str() {
-                                        "u8" => Number::U8,
-                                        "u16" => Number::U16,
-                                        "u32" => Number::U32,
-                                        _ => panic!("unsupported type"),
-                                    };
-                                    return SupportedTypes::SimpleTypes(SimpleTypes::Slice(
-                                        Slice {
-                                            size,
-                                            inner: match as_str.as_str() {
-                                                "u8" => Number::U8,
-                                                "u16" => Number::U16,
-                                                "u32" => Number::U32,
-                                                _ => panic!("unsupported type"),
-                                            },
-                                        },
-                                    ));
-                                }
-                            }
-                        } else {
-                            return SupportedTypes::SimpleTypes(SimpleTypes::Slice(Slice {
-                                size: Number::U32,
-                                inner: match as_str.as_str() {
-                                    "u8" => Number::U8,
-                                    "u16" => Number::U16,
-                                    "u32" => Number::U32,
-                                    _ => panic!("unsupported type"),
-                                },
-                            }));
-                        }
-                    }
-                }
-            }
-        } else if let Type::ImplTrait(tr) = ty {
-            let traits: Vec<_> = tr.bounds.iter().collect();
-            if let &[TypeParamBound::Trait(tr)] = traits.as_slice() {
-                let segments: Vec<_> = tr.path.segments.iter().collect();
-                if let &[simple] = segments.as_slice() {
-                    if simple.ident == "Writable" {
-                        if let PathArguments::AngleBracketed(gen) = &simple.arguments {
-                            let generics: Vec<_> = gen.args.iter().collect();
-                            if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
-                                let segments: Vec<_> = t.path.segments.iter().collect();
-                                if let &[simple] = segments.as_slice() {
-                                    let size = match simple.ident.to_string().as_str() {
-                                        "u8" => Number::U8,
-                                        "u16" => Number::U16,
-                                        "u32" => Number::U32,
-                                        _ => panic!("unsupported type"),
-                                    };
-                                    return SupportedTypes::SimpleTypes(SimpleTypes::Writable(
-                                        Writable { size_type: size },
-                                    ));
-                                }
-                            }
-                        } else {
-                            return SupportedTypes::SimpleTypes(SimpleTypes::Writable(Writable {
-                                size_type: Number::U32,
-                            }));
-                        }
-                    }
-                }
-            }
-        }
-        panic!("unsupported type")
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Slice {
-    size: Number,
-    inner: Number,
-}
-
-impl Slice {
-    fn min_size(&self) -> usize {
-        self.size.size() + 4
-    }
-
-    fn js_inlined(&self, parameter: String) -> String {
-        let ptr_read = Number::U32.js_get_inlined();
-        let len_read = match self.size {
-            Number::U8 => "m.getUint8(p+=4,true)".to_string(),
-            Number::U16 => "m.getUint16(p+=4,true)".to_string(),
-            Number::U32 => "m.getUint32(p+=4,true)".to_string(),
-            _ => panic!("unsupported length type"),
-        };
-        let read = match self.inner {
-            Number::U8 => format!("new Uint8Array(m.buffer,{},{});", ptr_read, len_read),
-            Number::U16 => format!("new Uint16Array(m.buffer,{},{});", ptr_read, len_read),
-            Number::U32 => format!("new Uint32Array(m.buffer,{},{});", ptr_read, len_read),
-            _ => todo!(),
-        };
-        parameter + "=" + &read + "p+=" + &self.size.size().to_string() + ";"
-    }
-
-    fn to_tokens(&self) -> TokenStream2 {
-        let inner = self.inner.to_tokens();
-        quote! { &[#inner] }
-    }
-
-    fn encode(&self, name: &Ident) -> TokenStream2 {
-        let len = Ident::new("len", Span::call_site());
-        let encode_len = self.size.encode(&len);
-        let ptr = Ident::new("ptr", Span::call_site());
-        let encode_ptr = Number::U32.encode(&ptr);
-        quote! {
-            let #ptr = #name.as_ptr();
-            #encode_ptr
-            let #len = #name.len();
-            #encode_len
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum Number {
-    U8,
-    U16,
-    U24,
-    U32,
-}
-
-impl Number {
-    fn size(&self) -> usize {
-        match self {
-            Number::U8 => 1,
-            Number::U16 => 2,
-            Number::U24 => 3,
-            Number::U32 => 4,
-        }
-    }
-
-    fn js(&self, parameter: String, read: &mut Read) -> String {
-        let r = format!("{}={};", parameter, self.js_get(read));
-        read.pos += self.size();
-        r
-    }
-
-    fn js_inlined(&self, parameter: String) -> String {
-        format!("{}={};", parameter, self.js_get_inlined())
-    }
-
-    fn js_get_inlined(&self) -> String {
-        let mut read = String::new();
-        read_size(self.size(), &mut read);
-        match self {
-            Number::U8 => select_bits_js_inner(&read, 8, 0, 8),
-            Number::U16 => select_bits_js_inner(&read, 16, 0, 16),
-            Number::U24 => select_bits_js_inner(&read, 32, 0, 24),
-            Number::U32 => select_bits_js_inner(&read, 32, 0, 32),
-        }
-    }
-
-    fn js_get(&self, read: &mut Read) -> String {
-        let r = match self {
-            Number::U8 => select_bits_js(read, 8),
-            Number::U16 => select_bits_js(read, 16),
-            Number::U24 => select_bits_js(read, 24),
-            Number::U32 => select_bits_js(read, 32),
-        };
-        read.pos += self.size();
-        r
-    }
-
-    fn to_tokens(&self) -> TokenStream2 {
-        match self {
-            Number::U8 => quote! { u8 },
-            Number::U16 => quote! { u16 },
-            Number::U24 => quote! { u24 },
-            Number::U32 => quote! { u32 },
-        }
-    }
-
-    fn encode(&self, name: &Ident) -> TokenStream2 {
-        let len_byte_size = self.size();
-        let encode_write = self.encode_write(name);
-        quote! {
-            #encode_write
-            self.msg.set_len(self.msg.len() + #len_byte_size);
-        }
-    }
-
-    fn encode_write(&self, name: &Ident) -> TokenStream2 {
-        let ty = self.to_tokens();
-        if let Number::U24 = self {
-            quote! {
-                let as_u32 = u32::from(#name);
-                *self.msg.as_mut_ptr().add(self.msg.len()).cast() = as_u32;
-            }
-        } else {
-            quote! {
-                *self.msg.as_mut_ptr().add(self.msg.len()).cast() = #name as #ty;
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Str {
-    size_type: Number,
-    cache_name: Option<Ident>,
-    static_str: bool,
-}
-
-impl Str {
-    fn inlinable(&self) -> bool {
-        self.cache_name.is_none()
-    }
-
-    fn to_tokens(&self) -> TokenStream2 {
-        if self.static_str {
-            quote! { &'static str }
-        } else {
-            quote! { &str }
-        }
-    }
-
-    fn min_size(&self) -> usize {
-        self.size_type.size() + usize::from(self.cache_name.is_some())
-    }
-
-    fn js(&self, parameter: String, read: &mut Read) -> String {
-        match &self.cache_name {
-            Some(cache) => {
-                let check_cache_hit = format!("(i&{})!=0", 1 << (read.pos * 8 + 7));
-                let cache_hit = select_bits_js(read, 7);
-                read.pos += 1;
-                let string_len = self.size_type.js_get(read);
-                format!(
-                    "if({}){{{}=s.substring(sp,sp+={});{}[{}]={};}}else{{{}={}[{}];}}",
-                    check_cache_hit,
-                    parameter,
-                    string_len,
-                    cache,
-                    cache_hit,
-                    parameter,
-                    parameter,
-                    cache,
-                    cache_hit,
-                )
-            }
-            None => {
-                let s = format!(
-                    "{}=s.substring(sp,sp+={});",
-                    parameter,
-                    self.size_type.js_get(read),
-                );
-                s
-            }
-        }
-    }
-
-    fn js_get(&self, read: &mut Read) -> Option<String> {
-        self.cache_name
-            .is_none()
-            .then(|| format!("s.substring(sp,sp+={})", self.size_type.js_get(read)))
-    }
-
-    fn js_inlined(&self, parameter: String) -> String {
-        format!("{}={};", parameter, self.js_get_inlined().unwrap())
-    }
-
-    fn js_get_inlined(&self) -> Option<String> {
-        self.cache_name
-            .is_none()
-            .then(|| format!("s.substring(sp,sp+={})", self.size_type.js_get_inlined()))
-    }
-
-    fn encode(&self, name: &Ident) -> TokenStream2 {
-        let len = Ident::new("len", Span::call_site());
-        let char_len = Ident::new("char_len", Span::call_site());
-        let write_len = self.size_type.encode(&char_len);
-        let len_byte_size = self.size_type.size();
-        let encode = quote! {
-            let #len = #name.len();
-            let #char_len: usize = #name.chars().map(|c| c.len_utf16()).sum();
-            #write_len
-            let old_len = self.str_buffer.len();
-            unsafe {
-                // SAFETY: We reserve uninitialized memory but then immediately write to it to make it initialized
-                self.str_buffer.reserve(#len);
-                self.str_buffer.set_len(old_len + #len);
-                __copy(#name.as_bytes(), &mut self.str_buffer[old_len..], #len);
-            }
-        };
-        match &self.cache_name {
-            Some(cache) => {
-                if self.static_str {
-                    quote! {
-                        let (_id, _new) = #cache.push(#name);
-                        if _new {
-                            *self.msg.as_mut_ptr().add(self.msg.len()) = 128 | _id;
-                            self.msg.set_len(self.msg.len() + 1);
-                            #encode
-                        }
-                        else {
-                            *self.msg.as_mut_ptr().add(self.msg.len()) = _id;
-                            unsafe {
-                                // SAFETY: Increase the length by the size of _id (u8) and the type of the length of the string
-                                self.msg.set_len(self.msg.len() + #len_byte_size + 1);
-                            }
-                        }
-                    }
-                } else {
-                    quote! {
-                        if let Some(&id) = #cache.get(#name){
-                            *self.msg.as_mut_ptr().add(self.msg.len()) = id;
-                            unsafe {
-                                // SAFETY: Increase the length by the size of _id (u8) and the type of the length of the string
-                                self.msg.set_len(self.msg.len() + #len_byte_size + 1);
-                            }
-                        }
-                        else {
-                            let cache_len = #cache.len() as u8;
-                            let id = if cache_len == 128 {
-                                if let Some((_, id)) = #cache.pop_lru() {
-                                    #cache.put(#name.to_string(), id);
-                                    id
-                                }
-                                else {
-                                    unreachable!()
-                                }
-                            } else {
-                                #cache.put(#name.to_string(), cache_len);
-                                cache_len
-                            };
-                            *self.msg.as_mut_ptr().add(self.msg.len()) = 128 | id;
-                            self.msg.set_len(self.msg.len() + 1);
-                            #encode
-                        }
-                    }
-                }
-            }
-            None => encode,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Writable {
-    size_type: Number,
-}
-
-impl Writable {
-    fn to_tokens(&self) -> TokenStream2 {
-        quote! { impl sledgehammer_utils::Writable }
-    }
-
-    fn min_size(&self) -> usize {
-        self.size_type.size()
-    }
-
-    fn js(&self, parameter: String, read: &mut Read) -> String {
-        let s = format!(
-            "{}=s.substring(sp,sp+={});",
-            parameter,
-            self.size_type.js_get(read),
-        );
-        read.pos += self.min_size();
-        s
-    }
-
-    fn js_inlined(&self, parameter: String) -> String {
-        format!(
-            "{}=s.substring(sp,sp+={});",
-            parameter,
-            self.size_type.js_get_inlined(),
-        )
-    }
-
-    fn js_get(&self, read: &mut Read) -> String {
-        format!("s.substring(sp,sp+={})", self.size_type.js_get(read))
-    }
-
-    fn js_get_inlined(&self) -> String {
-        format!("s.substring(sp,sp+={})", self.size_type.js_get_inlined())
-    }
-
-    fn encode(&self, name: &Ident) -> TokenStream2 {
-        let len = Ident::new("len", Span::call_site());
-        let write_len = self.size_type.encode(&len);
-        quote! {
-            unsafe {
-                let prev_len = self.str_buffer.len();
-                #name.write(&mut self.str_buffer);
-                // the length of the string is the change in length of the string buffer
-                let #len: usize = std::str::from_utf8_unchecked(&self.str_buffer[prev_len..]).chars().map(|c| c.len_utf16()).sum();
-                #write_len
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Bin<I: Item> {
-    position: usize,
-    remaining: usize,
-    filled: Vec<BinEntry<I>>,
-}
-
-impl<I: Item> Bin<I> {
-    fn new(size: usize) -> Self {
-        Self {
-            position: 0,
-            remaining: size,
-            filled: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, item: I) {
-        let size = item.size();
-        assert!(size <= self.remaining);
-        self.filled.push(BinEntry { item });
-        self.remaining -= size;
-        self.position += size;
-    }
-}
-
-impl Bin<(Ident, SupportedTypes)> {
-    fn js(&self) -> String {
-        if let &[BinEntry {
-            item: (name, SupportedTypes::SimpleTypes(ty)),
-        }] = &self.filled.as_slice()
-        {
-            if ty.inlinable() {
-                let mut js = ty.js_inlined(name.to_string());
-                // move the pointer forward by the number of bytes read
-                js += "p += ";
-                js += &self.position.to_string();
-                js += ";";
-                return js;
-            }
-        }
-
-        let mut js = String::new();
-
-        let mut read = Read::new(&mut js, self.position);
-
-        // move the pointer forward by the number of bytes read
-        js += "p += ";
-        js += &self.position.to_string();
-        js += ";";
-
-        for entry in &self.filled {
-            js += &entry.item.1.js(entry.item.0.to_string(), &mut read);
-        }
-
-        js
-    }
-}
-
-#[derive(Debug)]
-struct BinEntry<I: Item> {
-    item: I,
-}
-
-trait Item {
-    fn sized(&self) -> bool;
-    fn size(&self) -> usize;
-}
-
-impl Item for (Ident, SupportedTypes) {
-    fn sized(&self) -> bool {
-        self.1.read_from_u32()
-    }
-
-    fn size(&self) -> usize {
-        self.1.min_size()
-    }
-}
-
-fn pack<I: Item>(items: Vec<I>, bin_size: usize) -> (Vec<Bin<I>>, Vec<I>) {
-    // pack items into fixed sized bins
-
-    // first get any unsized items
-    let mut sized = Vec::with_capacity(items.len());
-    let mut unsized_items = Vec::new();
-    for item in items {
-        if item.sized() {
-            sized.push(item);
-        } else {
-            unsized_items.push(item);
-        }
-    }
-
-    // now pack the sized items
-    let mut bins: Vec<Bin<I>> = Vec::new();
-
-    // sort the items by size smallest to largest
-    sized.sort_unstable_by_key(|i| i.size());
-
-    // now pack the items into bins largest to smallest
-    for item in sized.into_iter().rev() {
-        let item_size = item.size();
-        // find the smallest bin that can fit the item
-        let mut smallest_bin = None;
-        let mut smallest_bin_size = usize::MAX;
-        for bin in &mut bins {
-            if bin.remaining >= item_size && smallest_bin_size > bin.remaining {
-                smallest_bin_size = bin.remaining;
-                smallest_bin = Some(bin);
-            }
-        }
-
-        if let Some(bin) = smallest_bin {
-            bin.push(item);
-        } else {
-            // create a new bin
-            let mut bin = Bin::new(bin_size);
-            bin.push(item);
-            bins.push(bin);
-        }
-    }
-
-    (bins, unsized_items)
 }
