@@ -1,19 +1,20 @@
 use quote::{__private::TokenStream as TokenStream2, quote};
-use syn::{Expr, Ident, Type};
+use syn::Expr;
 
-use crate::{select_bits_js, select_bits_js_inner};
+use crate::select_bits_js_inner;
 
+#[derive(Default)]
 pub struct BindingBuilder {
     js_u32_count: usize,
     js_flag_count: usize,
+    js_var_count: usize,
 }
 
 impl BindingBuilder {
-    fn new() -> Self {
-        Self {
-            js_u32_count: 0,
-            js_flag_count: 0,
-        }
+    pub fn uniuqe_var(&mut self) -> String {
+        let old = self.js_var_count;
+        self.js_var_count += 1;
+        format!("v{}", old)
     }
 
     pub fn u32(&mut self) -> RustJSU32 {
@@ -26,6 +27,13 @@ impl BindingBuilder {
         let id = self.js_flag_count;
         self.js_flag_count += 1;
         RustJSFlag { id }
+    }
+    
+    pub fn u32s_type_rust(&self) -> TokenStream2{
+        let len = self.js_u32_count;
+        quote! {
+            [u32; #len]
+        }
     }
 }
 
@@ -42,7 +50,7 @@ impl RustJSU32 {
         let id = self.id;
 
         quote! {
-            u32[#id] = #value;
+            self.u32s[#id] = #value;
         }
     }
 }

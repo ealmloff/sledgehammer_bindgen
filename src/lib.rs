@@ -49,18 +49,21 @@
 //!  - Each operation is encoded in a batch of four as a u32. Getting a number from an array buffer has a high constant cost, but getting a u32 instead of a u8 is not more expensive. Sledgehammer bindgen reads the u32 and then splits it into the 4 individual bytes. It will shuffle and pack the bytes into as few buckets as possible and try to inline reads into the javascript.
 //!  
 //!  - See this benchmark: <https://jsbench.me/csl9lfauwi/2>
-use std::collections::HashSet;
-use std::ops::Deref;
-
+use crate::encoder::Encoder;
+use builder::BindingBuilder;
+use encoder::{Encode, Encoders};
+use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
-use quote::quote;
-use syn::{
-    parse::Parse, parse_macro_input, Expr, GenericArgument, Ident, Lit, Pat, PathArguments, Type,
-};
-use syn::{ForeignItemFn, ItemFn, TypeParamBound};
+use quote::{quote, ToTokens};
+use std::collections::HashSet;
+use std::ops::Deref;
+use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit, Pat, Type};
+use syn::{ForeignItemFn, ItemFn};
 
 mod builder;
+mod encoder;
+mod function;
 mod types;
 
 /// # Generates bindings for batched calls to js functions. The generated code is a Buffer struct with methods for each function.
@@ -149,12 +152,13 @@ pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
     input.as_tokens().into()
 }
 
-#[derive(Debug)]
 struct Bindings {
     buffer: Ident,
     functions: Vec<FunctionBinding>,
     foreign_items: Vec<ForeignItemFn>,
-    intialize: Option<String>,
+    intialize: String,
+    builder: BindingBuilder,
+    encoders: Encoders,
 }
 
 impl Parse for Bindings {
@@ -164,7 +168,9 @@ impl Parse for Bindings {
         let mut buffer = None;
         let mut functions = Vec::new();
         let mut foreign_items = Vec::new();
-        let mut intialize = None;
+        let mut intialize = String::new();
+        let mut encoders = Encoders::default();
+        let mut builder = BindingBuilder::default();
         for item in extren_block.content.unwrap().1 {
             match item {
                 syn::Item::Const(cnst) => {
@@ -178,11 +184,11 @@ impl Parse for Bindings {
                         } else {
                             panic!("missing body")
                         };
-                        intialize = Some(body);
+                        intialize = body;
                     }
                 }
                 syn::Item::Fn(f) => {
-                    let f = FunctionBinding::new(f);
+                    let f = FunctionBinding::new(&mut encoders, &mut builder, f);
                     functions.push(f);
                 }
                 syn::Item::ForeignMod(m) => {
@@ -199,11 +205,17 @@ impl Parse for Bindings {
             }
         }
 
+        for encoder in encoders.values() {
+            intialize += &encoder.global_js();
+        }
+
         Ok(Bindings {
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
             foreign_items,
             intialize,
+            builder,
+            encoders,
         })
     }
 }
@@ -278,26 +290,47 @@ fn select_bits_js_inner(from: &str, size: usize, pos: usize, len: usize) -> Stri
 impl Bindings {
     fn js(&mut self) -> String {
         let op_size = function_discriminant_size_bits(self.functions.len() as u32);
-        let initialize = self.intialize.as_deref().unwrap_or_default();
+        let initialize = &self.intialize;
 
         let size = function_discriminant_size_bits(self.functions.len() as u32);
         assert!(size <= 8);
         let reads_per_u32 = (32 + (size - 1)) / size;
 
+        // TODO: restore run_from_buffer
+        // export function run_from_buffer(b){{
+        //     m=new DataView(b.buffer,b.byteOffset,b.byteLength);
+        //     d=b.length-{};
+        //     if(!c){{
+        //         c=new TextDecoder('utf-8',{{fatal: true}})
+        //     }}
+        //     run();
+        // }}
+
+        let op_mask = with_n_1_bits(op_size);
+
+        let match_op = self
+            .functions
+            .iter_mut()
+            .enumerate()
+            .fold(String::new(), |s, (i, f)| {
+                s + &format!("case {}:{}break;", i, f.js())
+            })
+            + &format!(
+                "case {}:return true;",
+                self.functions.len(),
+            );
+
+        let pre_run_js = self
+            .encoders
+            .values()
+            .fold(String::new(), |s, e| s + &e.pre_run_js());
+
         let start = format!(
             r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z;
-            {}
+            {initialize}
             export function create(r){{
                 d=r;
                 c=new TextDecoder('utf-8',{{fatal:true}})
-            }}
-            export function run_from_buffer(b){{
-                m=new DataView(b.buffer,b.byteOffset,b.byteLength);
-                d=b.length-{};
-                if(!c){{
-                    c=new TextDecoder('utf-8',{{fatal: true}})
-                }}
-                run();
             }}
             export function update_memory(b){{
                 m=new DataView(b.buffer)
@@ -331,82 +364,28 @@ impl Bindings {
                     }}
                     sp=0
                 }}
+                {pre_run_js}
                 for(;;){{
                     op=m.getUint32(p,true);
                     p+=4;
                     z=0;
-                    while(z++<{}){{
-                        switch(op&{}){{
-                            {}
+                    while(z++<{reads_per_u32}){{
+                        switch(op&{op_mask}){{
+                            {match_op}
+                        }}
+                        op>>>={op_size};
+                    }}
                 }}
             }}"#,
-            initialize,
-            DATA_LEN,
-            reads_per_u32,
-            with_n_1_bits(op_size),
-            self.functions
-                .iter_mut()
-                .enumerate()
-                .fold(String::new(), |s, (i, f)| {
-                    s + &format!("case {}:{}break;", i, f.js())
-                })
-                + &format!(
-                    "case {}:return true;}}op>>>={};}}",
-                    self.functions.len(),
-                    op_size
-                ),
         );
+        println!("{}", start);
         start
-    }
-
-    fn variables_js(&self) -> String {
-        let variables: HashSet<String> = self
-            .functions
-            .iter()
-            .flat_map(|f| f.args.iter().map(|(a, _)| a.to_string()))
-            .collect();
-
-        let variables: Vec<_> = variables.into_iter().collect();
-        variables.join(",")
     }
 
     fn as_tokens(&mut self) -> TokenStream2 {
         let all_js = self.js();
         let channel = self.channel();
         let foreign_items = &self.foreign_items;
-
-        let cache_names: HashSet<(&Ident, bool)> = self
-            .functions
-            .iter()
-            .flat_map(|f| {
-                f.args.iter().filter_map(|(_, ty)| match ty {
-                    SupportedTypes::SimpleTypes(SimpleTypes::Str(s)) => {
-                        s.cache_name.as_ref().map(|n| (n, s.static_str))
-                    }
-                    _ => None,
-                })
-            })
-            .collect();
-        let setup = cache_names.iter()
-            .map(|(cache, static_str)| {
-                if *static_str {
-                    quote!{
-                        #[allow(non_upper_case_globals)]
-                        static mut #cache: sledgehammer_utils::ConstLru<*const str, NonHashBuilder, 128, 256> = sledgehammer_utils::ConstLru::new(NonHashBuilder);
-                    }
-                }
-                else{
-                    quote!{
-                        #[allow(non_upper_case_globals)]
-                        static mut #cache: sledgehammer_utils::once_cell::sync::Lazy<
-                            sledgehammer_utils::lru::LruCache<String, u8, std::hash::BuildHasherDefault<sledgehammer_utils::rustc_hash::FxHasher>>,
-                        > = sledgehammer_utils::once_cell::sync::Lazy::new(|| {
-                            let build_hasher = std::hash::BuildHasherDefault::<sledgehammer_utils::rustc_hash::FxHasher>::default();
-                            sledgehammer_utils::lru::LruCache::with_hasher(std::num::NonZeroUsize::new(128).unwrap(), build_hasher)
-                        });
-                    }
-                }
-            });
 
         let ty = &self.buffer;
         quote! {
@@ -509,7 +488,6 @@ impl Bindings {
                 fn update_memory(memory: wasm_bindgen::JsValue);
                 #(#foreign_items)*
             }
-            #(#setup)*
             #channel
             const GENERATED_JS: &str = #all_js;
         }
@@ -546,6 +524,33 @@ impl Bindings {
         };
 
         let ty = &self.buffer;
+        let states = self.encoders.iter().map(|(_, e)| {
+            let ty = &e.rust_type();
+            let ident = &e.rust_ident();
+            quote! {
+                #ident: #ty,
+            }
+        });
+        let states_default = self.encoders.iter().map(|(_, e)| {
+            let ident = &e.rust_ident();
+            quote! {
+                #ident: Default::default(),
+            }
+        });
+
+        let pre_run_rust = self
+            .encoders
+            .iter()
+            .map(|(_, e)| e.pre_run_rust())
+            .collect::<Vec<_>>();
+        let post_run_rust = self
+            .encoders
+            .iter()
+            .map(|(_, e)| e.post_run_rust())
+            .collect::<Vec<_>>();
+
+         let u32s_type=self.builder.u32s_type_rust();
+
         quote! {
             fn __copy(src: &[u8], dst: &mut [u8], len: usize) {
                 for (m, i) in dst.iter_mut().zip(src.iter().take(len)) {
@@ -554,18 +559,20 @@ impl Bindings {
             }
             pub struct #ty {
                 msg: Vec<u8>,
-                str_buffer: Vec<u8>,
                 current_op_batch_idx: usize,
                 current_op_byte_idx: usize,
+                u32s: #u32s_type,
+                #( #states )*
             }
 
             impl Default for #ty {
                 fn default() -> Self {
                     Self {
                         msg: Vec::new(),
-                        str_buffer: Vec::new(),
                         current_op_batch_idx: 0,
                         current_op_byte_idx: #reads_per_u32,
+                        u32s: Default::default(),
+                        #( #states_default )*
                     }
                 }
             }
@@ -580,7 +587,6 @@ impl Bindings {
 
                     self.current_op_byte_idx = batch.current_op_byte_idx;
                     self.current_op_batch_idx = self.msg.len() + batch.current_op_batch_idx;
-                    self.str_buffer.extend_from_slice(&batch.str_buffer);
                     self.msg.append(&mut batch.msg);
                 }
 
@@ -604,8 +610,8 @@ impl Bindings {
                     {
                         self.encode_op(#end_msg);
                         let msg_ptr = self.msg.as_ptr();
-                        let str_ptr = self.str_buffer.as_ptr();
-                        self.update_metadata_ptrs(msg_ptr as u32, str_ptr as u32, self.str_buffer.len(), self.str_buffer.is_ascii());
+                        self.update_metadata_ptrs(msg_ptr as u32, str_ptr as u32);
+                        #(#pre_run_rust)*
 
                         let new_mem_size = core::arch::wasm32::memory_size(0);
                         // we need to update the memory if the memory has grown
@@ -615,14 +621,15 @@ impl Bindings {
                         }
 
                         run();
+
+                        #(#post_run_rust)*
                         self.current_op_batch_idx = 0;
                         self.current_op_byte_idx = #reads_per_u32;
-                        self.str_buffer.clear();
                         self.msg.clear();
                     }
                 }
 
-                fn update_metadata_ptrs(&mut self, msg_ptr: u32, str_ptr: u32, str_len: usize, str_all_ascii: bool) {
+                fn update_metadata_ptrs(&mut self, msg_ptr: u32, str_all_ascii: bool) {
                     // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
                     if get_metadata() == 255 {
                         // this is the first message, so we need to encode all the metadata
@@ -632,7 +639,6 @@ impl Bindings {
                             create(RAW_DATA_PTR as usize);
                         }
                         set_data_ptr(msg_ptr);
-                        set_str_ptr(str_ptr);
                         set_metadata(7);
                     } else {
                         if get_data_ptr() != msg_ptr {
@@ -643,185 +649,28 @@ impl Bindings {
                             // the first bit encodes if the msg pointer has changed
                             set_metadata(0);
                         }
-                        if get_str_ptr() != str_ptr {
-                            set_str_ptr(str_ptr);
-                            // the second bit encodes if the str pointer has changed
-                            set_metadata(get_metadata() | 2);
-                        }
-                    }
-                    if str_len != 0 {
-                        // the third bit encodes if there is any strings
-                        set_metadata(get_metadata() | 4);
-                        set_str_len(str_len as u32);
-                        if get_str_len() < 100 {
-                            // the fourth bit encodes if the strings are entirely ascii and small
-                            set_metadata(get_metadata() | ((str_all_ascii as u8) << 3));
-                        }
                     }
                 }
 
-                pub fn to_bytes(&mut self) -> Vec<u8> {
-                    self.encode_op(#end_msg);
-                    let str_len = self.str_buffer.len();
-                    let str_all_ascii = self.str_buffer.is_ascii();
-                    let mut bytes = self.msg.split_off(0);
-                    let string_start = bytes.len();
-                    bytes.append(&mut self.str_buffer.split_off(0));
-                    self.update_metadata_ptrs(0, string_start as u32, str_len, str_all_ascii);
-                    // SAFETY: we know that the data is valid because we only access it through the mutex
-                    with_data_mut(|data|{
-                        bytes.extend_from_slice(data);
-                    });
-                    self.current_op_batch_idx = 0;
-                    self.current_op_byte_idx = #reads_per_u32;
-                    bytes
-                }
+                // TODO: restore serialization
+                // pub fn to_bytes(&mut self) -> Vec<u8> {
+                //     self.encode_op(#end_msg);
+                //     let str_len = self.str_buffer.len();
+                //     let str_all_ascii = self.str_buffer.is_ascii();
+                //     let mut bytes = self.msg.split_off(0);
+                //     let string_start = bytes.len();
+                //     bytes.append(&mut self.str_buffer.split_off(0));
+                //     self.update_metadata_ptrs(0, string_start as u32, str_len, str_all_ascii);
+                //     // SAFETY: we know that the data is valid because we only access it through the mutex
+                //     with_data_mut(|data|{
+                //         bytes.extend_from_slice(data);
+                //     });
+                //     self.current_op_batch_idx = 0;
+                //     self.current_op_byte_idx = #reads_per_u32;
+                //     bytes
+                // }
 
                 #(#methods)*
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct JsBody {
-    segments: Vec<(String, String)>,
-    trailing: String,
-}
-
-fn parse_js_body(s: &str) -> JsBody {
-    let mut inside_param = false;
-    let mut last_was_escape = false;
-    let mut current_param = String::new();
-    let mut current_segment = String::new();
-    let mut segments = Vec::new();
-    for c in s.chars() {
-        match c {
-            '\\' => last_was_escape = true,
-            '$' => {
-                if last_was_escape {
-                    if inside_param {
-                        current_param.push(c);
-                    } else {
-                        current_segment.push(c);
-                    }
-                    last_was_escape = false;
-                } else {
-                    if inside_param {
-                        segments.push((current_segment, current_param));
-                        current_segment = String::new();
-                        current_param = String::new();
-                    }
-                    inside_param = !inside_param;
-                }
-            }
-            _ => {
-                last_was_escape = false;
-                if inside_param {
-                    current_param.push(c);
-                } else {
-                    current_segment.push(c);
-                }
-            }
-        }
-    }
-    JsBody {
-        segments,
-        trailing: current_segment,
-    }
-}
-
-#[test]
-fn parse_body() {
-    let js = "console.log($i$, $y$);";
-    let body = parse_js_body(js);
-    assert_eq!(
-        body.segments,
-        [
-            ("console.log(".to_string(), "i".to_string()),
-            (", ".to_string(), "y".to_string())
-        ]
-    );
-    assert_eq!(body.trailing, ");".to_string());
-}
-
-#[derive(Debug)]
-struct FunctionBinding {
-    name: Ident,
-    args: Vec<(Ident, Type)>,
-    body: JsBody,
-}
-
-impl FunctionBinding {
-    fn new(function: ItemFn) -> Self {
-        let name = function.sig.ident;
-        let args = function
-            .sig
-            .inputs
-            .iter()
-            .map(|arg| match arg {
-                syn::FnArg::Receiver(_) => todo!("self"),
-                syn::FnArg::Typed(ty) => {
-                    let ident = if let Pat::Ident(i) = &*ty.pat {
-                        i.ident.clone()
-                    } else {
-                        panic!("only simple idents are supported")
-                    };
-                    (ident, ty.ty.deref().clone())
-                }
-            })
-            .collect();
-
-        let body = if let &[syn::Stmt::Expr(Expr::Lit(lit))] = &function.block.stmts.as_slice() {
-            if let Lit::Str(s) = &lit.lit {
-                s.value()
-            } else {
-                panic!("missing body")
-            }
-        } else {
-            panic!("missing body")
-        };
-        let body = parse_js_body(&body);
-
-        Self { name, args, body }
-    }
-
-    fn js(&mut self) -> String {
-        let args = self.args.clone();
-
-        todo!()
-    }
-
-    fn to_tokens(&self, index: u8) -> TokenStream2 {
-        let name = &self.name;
-        let args: Vec<_> = self.args.iter().map(|(a, _)| a).collect();
-        let types = self.args.iter().map(|(_, t)| t.to_tokens());
-        let encode_types = self
-            .remaining
-            .iter()
-            .chain(
-                self.bins
-                    .iter()
-                    .flat_map(|bin| bin.filled.iter().map(|entry| &entry.item)),
-            )
-            .map(|(i, t)| t.encode(i));
-        let size: usize = self.args.iter().map(|(_, t)| t.min_size()).sum();
-        let reserve = if size == 0 {
-            quote! {}
-        } else {
-            quote! {self.msg.reserve(#size);}
-        };
-        quote! {
-            #[allow(clippy::uninit_vec)]
-            pub fn #name(&mut self, #(#args: #types),*) {
-                self.encode_op(#index);
-                #reserve
-                unsafe {
-                    // SAFETY: we just reserved enough space for all the types we are about to write so we can write them without checking the capacity
-                    #(
-                        #encode_types;
-                    )*
-                }
             }
         }
     }

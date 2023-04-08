@@ -5,8 +5,7 @@ use syn::Ident;
 use syn::Type;
 
 use crate::builder::{RustJSFlag, RustJSU32};
-
-use super::{CreateEncoder, Encodable, Encoder};
+use crate::encoder::*;
 
 pub struct NumberEncoder<const S: u32> {
     array_moved_flag: RustJSFlag,
@@ -14,6 +13,15 @@ pub struct NumberEncoder<const S: u32> {
 }
 
 impl<const S: u32> NumberEncoder<S> {
+    pub fn new(builder: &mut crate::builder::BindingBuilder) -> Self {
+        let array_moved_flag = builder.flag();
+        let array_ptr = builder.u32();
+        Self {
+            array_moved_flag,
+            array_ptr,
+        }
+    }
+
     fn size(&self) -> u32 {
         match S {
             1 => 8,
@@ -38,7 +46,7 @@ impl<const S: u32> CreateEncoder for NumberEncoder<S> {
 impl<const S: u32> Encoder for NumberEncoder<S> {
     fn global_js(&self) -> String {
         let size = self.size();
-        format!("let u{size}buf,u{size}bufpos;")
+        format!("let u{size}buf,u{size}bufp;")
     }
 
     fn pre_run_js(&self) -> String {
@@ -49,7 +57,7 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
             "if ({moved}){{
                 u{size}buf=new Uint{size}Array(m.buffer,{ptr})
             }}
-            u{size}bufpos=0;"
+            u{size}bufp=0;"
         )
     }
 
@@ -75,7 +83,14 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
         quote! {}
     }
 
-    fn pre_encode_rust(&self) -> TokenStream2 {
+    fn pre_run_rust(&self) -> TokenStream2 {
+        let ident = self.rust_ident();
+        quote! {
+            #ident.clear();
+        }
+    }
+
+    fn post_run_rust(&self) -> TokenStream2 {
         let ident = self.rust_ident();
         quote! {
             #ident.clear();
@@ -83,51 +98,38 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct U8;
-#[derive(Debug, Clone, PartialEq)]
-pub struct U16;
-#[derive(Debug, Clone, PartialEq)]
-pub struct U32;
-
-impl Encodable for U8 {
-    type Encoder = NumberEncoder<1>;
-
+impl Encode for NumberEncoder<1> {
     fn encode_js(&self) -> String {
         "u8buf.getUint8(u8bufp++,true)".to_string()
     }
 
-    fn encode_rust(&self, ident: Ident) -> TokenStream2 {
+    fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
         quote! {
-            buf_u8.push(#ident);
+            self.buf_u8.push(#ident);
         }
     }
 }
 
-impl Encodable for U16 {
-    type Encoder = NumberEncoder<2>;
-
+impl Encode for NumberEncoder<2> {
     fn encode_js(&self) -> String {
         "u8buf.getUint16(u16bufp++,true)".to_string()
     }
 
-    fn encode_rust(&self, ident: Ident) -> TokenStream2 {
+    fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
         quote! {
-            buf_u16.push(#ident);
+            self.buf_u16.push(#ident);
         }
     }
 }
 
-impl Encodable for U32 {
-    type Encoder = NumberEncoder<4>;
-
+impl Encode for NumberEncoder<4> {
     fn encode_js(&self) -> String {
         "u8buf.getUint32(u32bufp++,true)".to_string()
     }
 
-    fn encode_rust(&self, ident: Ident) -> TokenStream2 {
+    fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
         quote! {
-            buf_u32.push(#ident);
+            self.buf_u32.push(#ident);
         }
     }
 }
