@@ -1,5 +1,5 @@
 use quote::{__private::TokenStream as TokenStream2, quote};
-use syn::Expr;
+use syn::{parse_quote, Expr, Ident};
 
 use crate::select_bits_js_inner;
 
@@ -11,7 +11,7 @@ pub struct BindingBuilder {
 }
 
 impl BindingBuilder {
-    pub fn uniuqe_var(&mut self) -> String {
+    pub fn unique_var(&mut self) -> String {
         let old = self.js_var_count;
         self.js_var_count += 1;
         format!("v{}", old)
@@ -28,12 +28,26 @@ impl BindingBuilder {
         self.js_flag_count += 1;
         RustJSFlag { id }
     }
-    
-    pub fn u32s_type_rust(&self) -> TokenStream2{
-        let len = self.js_u32_count;
+
+    pub fn rust_ident(&self) -> Ident {
+        parse_quote!(metadata)
+    }
+
+    pub fn rust_type(&self) -> TokenStream2 {
+        let len = self.js_u32_count + 1;
         quote! {
-            [u32; #len]
+            std::pin::Pin<std::boxed::Box<[std::cell::Cell<u32>; #len]>>
         }
+    }
+
+    pub fn rust_init(&self) -> TokenStream2 {
+        quote! {
+            std::boxed::Box::pin(Default::default())
+        }
+    }
+
+    pub fn pre_run_js(&self) -> String {
+        format!("metaflags=m.getUint32(d,true);")
     }
 }
 
@@ -43,14 +57,22 @@ pub struct RustJSU32 {
 
 impl RustJSU32 {
     pub fn read_js(&self) -> String {
-        format!("u32s[{}]", self.id)
+        format!("m.getUint32(d+{}*4,true)", self.id + 1)
     }
 
     pub fn write_rust(&self, value: Expr) -> TokenStream2 {
         let id = self.id;
 
         quote! {
-            self.u32s[#id] = #value;
+            self.metadata[#id + 1].set(#value);
+        }
+    }
+
+    pub fn get_rust(&self) -> TokenStream2 {
+        let id = self.id;
+
+        quote! {
+            self.metadata[#id + 1].get()
         }
     }
 }
@@ -61,7 +83,7 @@ pub struct RustJSFlag {
 
 impl RustJSFlag {
     pub fn read_js(&self) -> String {
-        select_bits_js_inner("flags", 32, self.id, 1)
+        select_bits_js_inner("metaflags", 32, self.id, 1)
     }
 
     pub fn write_rust(&self, value: Expr) -> TokenStream2 {
@@ -69,9 +91,9 @@ impl RustJSFlag {
 
         quote! {
             if #value {
-                flags |= 1 << #id;
+                self.metadata[0].set(self.metadata[0].get() | (1 << #id));
             } else {
-                flags &= !(1 << #id);
+                self.metadata[0].set(self.metadata[0].get() & !(1 << #id));
             }
         }
     }

@@ -83,24 +83,27 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
         quote! {}
     }
 
+    fn init_rust(&self) -> TokenStream2 {
+        self.array_moved_flag.write_rust(parse_quote!(true))
+    }
+
     fn pre_run_rust(&self) -> TokenStream2 {
         let ident = self.rust_ident();
-        quote! {
-            #ident.clear();
-        }
+        self.array_ptr
+            .write_rust(parse_quote!(self.#ident.as_ptr() as u32))
     }
 
     fn post_run_rust(&self) -> TokenStream2 {
         let ident = self.rust_ident();
         quote! {
-            #ident.clear();
+            self.#ident.clear();
         }
     }
 }
 
 impl Encode for NumberEncoder<1> {
     fn encode_js(&self) -> String {
-        "u8buf.getUint8(u8bufp++,true)".to_string()
+        "u8buf[u8bufp++]".to_string()
     }
 
     fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
@@ -112,7 +115,7 @@ impl Encode for NumberEncoder<1> {
 
 impl Encode for NumberEncoder<2> {
     fn encode_js(&self) -> String {
-        "u8buf.getUint16(u16bufp++,true)".to_string()
+        "u16buf[u16bufp++]".to_string()
     }
 
     fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
@@ -124,7 +127,7 @@ impl Encode for NumberEncoder<2> {
 
 impl Encode for NumberEncoder<4> {
     fn encode_js(&self) -> String {
-        "u8buf.getUint32(u32bufp++,true)".to_string()
+        "u32buf[u32bufp++]".to_string()
     }
 
     fn encode_rust(&self, ident: &Ident) -> TokenStream2 {

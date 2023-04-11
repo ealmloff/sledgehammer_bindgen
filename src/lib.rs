@@ -50,7 +50,7 @@
 //!  
 //!  - See this benchmark: <https://jsbench.me/csl9lfauwi/2>
 use crate::encoder::Encoder;
-use builder::BindingBuilder;
+use builder::{BindingBuilder, RustJSFlag, RustJSU32};
 use encoder::{Encode, Encoders};
 use function::FunctionBinding;
 use proc_macro::TokenStream;
@@ -59,7 +59,7 @@ use quote::{quote, ToTokens};
 use std::collections::HashSet;
 use std::ops::Deref;
 use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit, Pat, Type};
-use syn::{ForeignItemFn, ItemFn};
+use syn::{parse_quote, ForeignItemFn, ItemFn};
 
 mod builder;
 mod encoder;
@@ -159,6 +159,8 @@ struct Bindings {
     intialize: String,
     builder: BindingBuilder,
     encoders: Encoders,
+    msg_ptr_u32: RustJSU32,
+    msg_moved_flag: RustJSFlag,
 }
 
 impl Parse for Bindings {
@@ -209,6 +211,9 @@ impl Parse for Bindings {
             intialize += &encoder.global_js();
         }
 
+        let msg_ptr_u32 = builder.u32();
+        let msg_moved_flag = builder.flag();
+
         Ok(Bindings {
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
@@ -216,6 +221,8 @@ impl Parse for Bindings {
             intialize,
             builder,
             encoders,
+            msg_ptr_u32,
+            msg_moved_flag,
         })
     }
 }
@@ -315,18 +322,20 @@ impl Bindings {
             .fold(String::new(), |s, (i, f)| {
                 s + &format!("case {}:{}break;", i, f.js())
             })
-            + &format!(
-                "case {}:return true;",
-                self.functions.len(),
-            );
+            + &format!("case {}:return true;", self.functions.len(),);
 
         let pre_run_js = self
             .encoders
             .values()
             .fold(String::new(), |s, e| s + &e.pre_run_js());
 
+        let msg_ptr_moved = self.msg_moved_flag.read_js();
+        let read_msg_ptr = self.msg_ptr_u32.read_js();
+
+        let pre_run_metadata = self.builder.pre_run_js();
+
         let start = format!(
-            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z;
+            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z,metaflags;
             {initialize}
             export function create(r){{
                 d=r;
@@ -336,34 +345,12 @@ impl Bindings {
                 m=new DataView(b.buffer)
             }}
             export function run(){{
+                {pre_run_metadata}
                 t=m.getUint8(d,true);
-                if(t&1){{
-                    ls=m.getUint32(d+1,true)
+                if({msg_ptr_moved}){{
+                    ls={read_msg_ptr};
                 }}
                 p=ls;
-                if(t&2){{
-                    lss=m.getUint32(d+5,true)
-                }}
-                if(t&4){{
-                    sl=m.getUint32(d+9,true);
-                    if(t&8){{
-                        sp=lss;
-                        s="";
-                        e=sp+(sl/4|0)*4;
-                        while(sp<e){{
-                            t=m.getUint32(sp,true);
-                            s+=String.fromCharCode(t&255,(t&65280)>>8,(t&16711680)>>16,t>>24);
-                            sp+=4
-                        }}
-                        while(sp<lss+sl){{
-                            s+=String.fromCharCode(m.getUint8(sp++));
-                        }}
-                    }}
-                    else{{
-                        s=c.decode(new DataView(m.buffer,lss,sl))
-                    }}
-                    sp=0
-                }}
                 {pre_run_js}
                 for(;;){{
                     op=m.getUint32(p,true);
@@ -410,67 +397,6 @@ impl Bindings {
                     self.0 = i as u64;
                 }
             }
-            const DATA_LEN: usize = 1 + 4*3;
-            // force the data to be packed so that we only need to send one pointer to js
-            // layout: [u8 metadata, u32 data_ptr, u32 str_ptr, u32 str_len_ptr]
-            static mut RAW_DATA: [u8; DATA_LEN] = [255; DATA_LEN];
-            static mut RAW_DATA_PTR: *const [u8; DATA_LEN] = unsafe { &RAW_DATA };
-            static DATA: std::sync::Mutex<()> = unsafe{ std::sync::Mutex::new(()) };
-            fn with_data_mut<O>(f: impl FnOnce(&mut [u8; DATA_LEN]) -> O) -> O {
-                let mut data = DATA.lock().unwrap();
-                // SAFETY: we only access the data through the mutex, so we know that it is valid
-                unsafe {
-                    f(&mut RAW_DATA)
-                }
-            }
-            fn get_metadata() -> u8 {
-                with_data_mut(|data| data[0])
-            }
-            fn set_metadata(metadata: u8) {
-                with_data_mut(|data| data[0] = metadata);
-            }
-            fn get_data_ptr() -> u32 {
-                use std::convert::TryInto;
-                with_data_mut(|data| {
-                    // SAFETY: we know that the data is 4 bytes long
-                    unsafe {
-                        u32::from_le_bytes(data[1..5].try_into().unwrap_unchecked())
-                    }
-                })
-            }
-            fn set_data_ptr(ptr: u32) {
-                with_data_mut(|data| {
-                    data[1..5].copy_from_slice(&ptr.to_le_bytes());
-                })
-            }
-            fn get_str_ptr() -> u32 {
-                use std::convert::TryInto;
-                with_data_mut(|data| {
-                    unsafe{
-                        // SAFETY: we know that the data is 4 bytes long
-                        u32::from_le_bytes(data[1+4..1+4+4].try_into().unwrap_unchecked())
-                    }
-                })
-            }
-            fn set_str_ptr(ptr: u32) {
-                with_data_mut(|data| {
-                    data[1+4..1+4+4].copy_from_slice(&ptr.to_le_bytes());
-                })
-            }
-            fn get_str_len() -> u32 {
-                use std::convert::TryInto;
-                with_data_mut(|data| {
-                    unsafe{
-                        // SAFETY: we know that the data is 4 bytes long
-                        u32::from_le_bytes(data[1+4+4..1+4+4+4].try_into().unwrap_unchecked())
-                    }
-                })
-            }
-            fn set_str_len(len: u32) {
-                with_data_mut(|data| {
-                    data[1+4+4..1+4+4+4].copy_from_slice(&len.to_le_bytes());
-                })
-            }
             static LAST_MEM_SIZE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             fn set_last_mem_size(size: usize) {
                 LAST_MEM_SIZE.store(size, std::sync::atomic::Ordering::SeqCst);
@@ -480,7 +406,7 @@ impl Bindings {
             }
             #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
             extern "C" {
-                fn create(metadata_ptr: usize);
+                fn create(metadata_ptr: u32);
                 fn run();
                 #[doc = concat!("Runs the serialized message provided")]
                 #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
@@ -493,7 +419,7 @@ impl Bindings {
         }
     }
 
-    fn channel(&self) -> TokenStream2 {
+    fn channel(&mut self) -> TokenStream2 {
         let methods = self
             .functions
             .iter()
@@ -543,13 +469,26 @@ impl Bindings {
             .iter()
             .map(|(_, e)| e.pre_run_rust())
             .collect::<Vec<_>>();
+        let first_run_states = self
+            .encoders
+            .iter()
+            .map(|(_, e)| e.init_rust())
+            .collect::<Vec<_>>();
         let post_run_rust = self
             .encoders
             .iter()
             .map(|(_, e)| e.post_run_rust())
             .collect::<Vec<_>>();
 
-         let u32s_type=self.builder.u32s_type_rust();
+        let meta_type = self.builder.rust_type();
+        let meta_ident = self.builder.rust_ident();
+        let meta_init = self.builder.rust_init();
+
+        let set_msg_ptr = self
+            .msg_ptr_u32
+            .write_rust(parse_quote! {self.msg.as_ptr() as u32});
+        let set_msg_moved = self.msg_moved_flag.write_rust(parse_quote! {msg_moved});
+        let get_msg_ptr = self.msg_ptr_u32.get_rust();
 
         quote! {
             fn __copy(src: &[u8], dst: &mut [u8], len: usize) {
@@ -557,12 +496,13 @@ impl Bindings {
                     *m = *i;
                 }
             }
+
             pub struct #ty {
                 msg: Vec<u8>,
                 current_op_batch_idx: usize,
                 current_op_byte_idx: usize,
-                u32s: #u32s_type,
                 #( #states )*
+                #meta_ident: #meta_type,
             }
 
             impl Default for #ty {
@@ -571,8 +511,8 @@ impl Bindings {
                         msg: Vec::new(),
                         current_op_batch_idx: 0,
                         current_op_byte_idx: #reads_per_u32,
-                        u32s: Default::default(),
                         #( #states_default )*
+                        #meta_ident: #meta_init,
                     }
                 }
             }
@@ -609,8 +549,8 @@ impl Bindings {
                     #[cfg(target_family = "wasm")]
                     {
                         self.encode_op(#end_msg);
-                        let msg_ptr = self.msg.as_ptr();
-                        self.update_metadata_ptrs(msg_ptr as u32, str_ptr as u32);
+                        #set_msg_ptr
+                        self.update_metadata_ptrs();
                         #(#pre_run_rust)*
 
                         let new_mem_size = core::arch::wasm32::memory_size(0);
@@ -629,26 +569,29 @@ impl Bindings {
                     }
                 }
 
-                fn update_metadata_ptrs(&mut self, msg_ptr: u32, str_all_ascii: bool) {
+                fn update_metadata_ptrs(&mut self) {
+                    static FIRST_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+                    let first_run = FIRST_RUN.swap(false, std::sync::atomic::Ordering::Relaxed);
+                    let metadata_ptr =  self.metadata.as_ref().get_ref() as *const _ as u32;
+
                     // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
-                    if get_metadata() == 255 {
+                    if first_run {
+                        #(#first_run_states)*
                         // this is the first message, so we need to encode all the metadata
                         #[cfg(target_family = "wasm")]
                         unsafe{
-                            // SAFETY: RAW_DATA is currently initialized and we will not write to it while javascript is reading from it
-                            create(RAW_DATA_PTR as usize);
+                            // SAFETY: self.metadata is pinned, initialized and we will not write to it while javascript is reading from it
+                            create(metadata_ptr);
                         }
-                        set_data_ptr(msg_ptr);
-                        set_metadata(7);
+                        #set_msg_ptr
+                        let msg_moved = true;
+                        #set_msg_moved
                     } else {
-                        if get_data_ptr() != msg_ptr {
-                            set_data_ptr(msg_ptr);
-                            // the first bit encodes if the msg pointer has changed
-                            set_metadata(1);
-                        } else {
-                            // the first bit encodes if the msg pointer has changed
-                            set_metadata(0);
+                        let msg_moved = #get_msg_ptr != metadata_ptr;
+                        if msg_moved {
+                            #set_msg_ptr
                         }
+                        #set_msg_moved
                     }
                 }
 

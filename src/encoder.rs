@@ -28,6 +28,10 @@ pub trait Encoder {
 
     fn global_rust(&self) -> TokenStream2;
 
+    fn init_rust(&self) -> TokenStream2 {
+        quote!()
+    }
+
     fn pre_run_rust(&self) -> TokenStream2 {
         quote!()
     }
@@ -68,6 +72,10 @@ impl Encoder for EncodeTraitObject {
 
     fn global_rust(&self) -> TokenStream2 {
         self.0.global_rust()
+    }
+
+    fn init_rust(&self) -> TokenStream2 {
+        self.0.init_rust()
     }
 
     fn pre_run_rust(&self) -> TokenStream2 {
