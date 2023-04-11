@@ -334,7 +334,7 @@ impl Bindings {
 
         let pre_run_metadata = self.builder.pre_run_js();
 
-        let start = format!(
+        format!(
             r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z,metaflags;
             {initialize}
             export function create(r){{
@@ -364,9 +364,7 @@ impl Bindings {
                     }}
                 }}
             }}"#,
-        );
-        println!("{}", start);
-        start
+        )
     }
 
     fn as_tokens(&mut self) -> TokenStream2 {
