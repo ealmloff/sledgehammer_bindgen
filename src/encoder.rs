@@ -8,7 +8,7 @@ use crate::builder::BindingBuilder;
 pub trait CreateEncoder {
     type Output;
 
-    fn new(&self, builder: &mut BindingBuilder) -> Self::Output;
+    fn create(&self, builder: &mut BindingBuilder) -> Self::Output;
 
     fn rust_ident(&self) -> Ident;
 }
@@ -129,6 +129,6 @@ impl Encoders {
         let id = factory.rust_ident();
         self.encoders
             .entry(id)
-            .or_insert_with(|| EncodeTraitObject(Box::new(factory.new(builder))))
+            .or_insert_with(|| EncodeTraitObject(Box::new(factory.create(builder))))
     }
 }

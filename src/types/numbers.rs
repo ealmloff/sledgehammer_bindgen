@@ -37,7 +37,7 @@ pub struct NumberEncoderFactory<const S: u32>;
 impl<const S: u32> CreateEncoder for NumberEncoderFactory<S> {
     type Output = NumberEncoder<S>;
 
-    fn new(&self, builder: &mut crate::builder::BindingBuilder) -> Self::Output {
+    fn create(&self, builder: &mut crate::builder::BindingBuilder) -> Self::Output {
         let array_moved_flag = builder.flag();
         let array_ptr = builder.u32();
         NumberEncoder {

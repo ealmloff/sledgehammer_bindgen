@@ -1,11 +1,8 @@
-use crate::types::{numbers::NumberEncoderFactory, string::StrEncoderFactory};
-use std::{collections::HashMap, ops::Deref, string};
+use crate::types::{numbers::NumberEncoderFactory, slice::SliceFactory, string::StrEncoderFactory};
+use std::ops::Deref;
 
 use quote::{__private::TokenStream as TokenStream2, quote};
-use syn::{
-    parse_quote, Expr, GenericArgument, Ident, ItemFn, Lit, Pat, PathArguments, Type,
-    TypeParamBound,
-};
+use syn::{parse_quote, Expr, GenericArgument, Ident, ItemFn, Lit, Pat, PathArguments, Type};
 
 use crate::{
     builder::BindingBuilder,
@@ -16,7 +13,9 @@ use crate::{
 pub struct FunctionBinding {
     name: Ident,
     type_encodings: Vec<TypeEncoding>,
+    encoding_order: Vec<usize>,
     js_output: String,
+    pub(crate) variables: Vec<String>,
 }
 
 struct TypeEncoding {
@@ -43,6 +42,8 @@ impl FunctionBinding {
         let mut myself = Self {
             name,
             type_encodings: Vec::new(),
+            encoding_order: Vec::new(),
+            variables: Vec::new(),
             js_output: String::new(),
         };
 
@@ -70,24 +71,51 @@ impl FunctionBinding {
             panic!("missing body")
         };
 
-        let mut javascript_decodings: HashMap<_, _> = myself
-            .type_encodings
-            .iter()
-            .map(|encoding| (encoding.ident.to_string(), encoding.decode_js.clone()))
-            .collect();
+        let should_inline = {
+            let mut inlined_count = 0;
+            parse_js_body(&body, |_| inlined_count += 1);
+            inlined_count == myself.type_encodings.len()
+        };
 
-        let body = parse_js_body(&body, |parameter| {
-            *parameter = javascript_decodings
-                .remove(parameter.as_str())
-                .unwrap_or_else(|| panic!("attempted to decode unknown parameter: {}", parameter));
-        });
+        let body = if should_inline {
+            // We need to reorder the javascript_decodings to match the order of the parameters
+            parse_js_body(&body, |parameter| {
+                let idx = myself
+                    .type_encodings
+                    .iter()
+                    .position(|e| e.ident == parameter)
+                    .unwrap_or_else(|| {
+                        panic!("attempted to inline an unknown parameter: {}", parameter)
+                    });
+                let encoding = &myself.type_encodings[idx];
+                *parameter = encoding.decode_js.clone();
+                myself.encoding_order.push(idx);
+            })
+        } else {
+            myself.encoding_order = (0..myself.type_encodings.len()).collect();
 
-        let unmatched_decodings: String = javascript_decodings
-            .into_iter()
-            .map(|(k, v)| format!("const {}={};", k, v))
-            .collect();
+            let javascript_decodings: Vec<_> = myself
+                .type_encodings
+                .iter()
+                .map(|encoding| (encoding.ident.to_string(), encoding.decode_js.clone()))
+                .collect();
 
-        myself.js_output = format!("{}{}", unmatched_decodings, body);
+            myself.variables = javascript_decodings
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect();
+
+            let unmatched_decodings: String = javascript_decodings
+                .into_iter()
+                .map(|(k, v)| format!("{}={};", k, v))
+                .collect();
+
+            myself.js_output = unmatched_decodings;
+
+            parse_js_body(&body, |_| {})
+        };
+
+        myself.js_output += &body;
 
         myself
     }
@@ -100,10 +128,10 @@ impl FunctionBinding {
         let name = &self.name;
         let args = self.type_encodings.iter().map(|encoding| &encoding.ident);
         let types = self.type_encodings.iter().map(|encoding| &encoding.ty);
-        let encode = self
-            .type_encodings
-            .iter()
-            .map(|encoding| &encoding.encode_rust);
+        let encode = self.encoding_order.iter().map(|idx| {
+            let encoding = &self.type_encodings[*idx];
+            &encoding.encode_rust
+        });
 
         quote! {
             #[allow(clippy::uninit_vec)]
@@ -148,12 +176,12 @@ impl FunctionBinding {
                 .as_ref()
                 .filter(|l| l.ident == "static")
                 .is_some();
-            let ty = if static_str {
-                parse_quote!(&'static str)
-            } else {
-                parse_quote!(&str)
-            };
             if let Type::Path(segments) = &*ty_ref.elem {
+                let ty = if static_str {
+                    parse_quote!(&'static str)
+                } else {
+                    parse_quote!(&str)
+                };
                 let segments: Vec<_> = segments.path.segments.iter().collect();
                 if let &[simple] = segments.as_slice() {
                     let as_str = simple.ident.to_string().to_lowercase();
@@ -172,7 +200,6 @@ impl FunctionBinding {
                                             cache = Some(simple.ident.clone());
                                         }
                                     }
-                                    println!("cache: {:?}", cache);
                                     let encoder = match simple.ident.to_string().as_str() {
                                         "u8" => {
                                             encoders.insert(NumberEncoderFactory::<1>, builder);
@@ -229,6 +256,9 @@ impl FunctionBinding {
                 }
             }
             if let Type::Slice(slice) = &*ty_ref.elem {
+                if !static_str {
+                    return;
+                }
                 if let Type::Path(segments) = &*slice.elem {
                     let segments: Vec<_> = segments.path.segments.iter().collect();
                     if let &[simple] = segments.as_slice() {
@@ -238,71 +268,106 @@ impl FunctionBinding {
                             if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
                                 let segments: Vec<_> = t.path.segments.iter().collect();
                                 if let &[simple] = segments.as_slice() {
-                                    todo!()
-                                    // let size = match simple.ident.to_string().as_str() {
-                                    //     "u8" => Number::U8,
-                                    //     "u16" => Number::U16,
-                                    //     "u32" => Number::U32,
-                                    //     _ => panic!("unsupported type"),
-                                    // };
-                                    // return SupportedTypes::SupportedTypes(SupportedTypes::Slice(
-                                    //     Slice {
-                                    //         size,
-                                    //         inner: match as_str.as_str() {
-                                    //             "u8" => Number::U8,
-                                    //             "u16" => Number::U16,
-                                    //             "u32" => Number::U32,
-                                    //             _ => panic!("unsupported type"),
-                                    //         },
-                                    //     },
-                                    // ));
+                                    let encoder = match simple.ident.to_string().as_str() {
+                                        "u8" => match as_str.as_str() {
+                                            "u8" => {
+                                                encoders.insert(NumberEncoderFactory::<1>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<1, 1>,
+                                                    builder,
+                                                )
+                                            }
+                                            "u16" => {
+                                                encoders.insert(NumberEncoderFactory::<2>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<2, 1>,
+                                                    builder,
+                                                )
+                                            }
+                                            "u32" => {
+                                                encoders.insert(NumberEncoderFactory::<4>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<4, 1>,
+                                                    builder,
+                                                )
+                                            }
+                                            _ => panic!("unsupported type"),
+                                        },
+                                        "u16" => match as_str.as_str() {
+                                            "u8" => {
+                                                encoders.insert(NumberEncoderFactory::<1>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<1, 2>,
+                                                    builder,
+                                                )
+                                            }
+                                            "u16" => {
+                                                encoders.insert(NumberEncoderFactory::<2>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<2, 2>,
+                                                    builder,
+                                                )
+                                            }
+                                            "u32" => {
+                                                encoders.insert(NumberEncoderFactory::<4>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<4, 2>,
+                                                    builder,
+                                                )
+                                            }
+                                            _ => panic!("unsupported type"),
+                                        },
+                                        "u32" => match as_str.as_str() {
+                                            "u8" => {
+                                                encoders.insert(NumberEncoderFactory::<1>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<1, 4>,
+                                                    builder,
+                                                )
+                                            }
+                                            "u16" => {
+                                                encoders.insert(NumberEncoderFactory::<2>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<2, 4>,
+                                                    builder,
+                                                )
+                                            }
+                                            "u32" => {
+                                                encoders.insert(NumberEncoderFactory::<4>, builder);
+                                                encoders.get_or_insert_with(
+                                                    SliceFactory::<4, 4>,
+                                                    builder,
+                                                )
+                                            }
+                                            _ => panic!("unsupported type"),
+                                        },
+                                        _ => panic!("unsupported type"),
+                                    };
+
+                                    let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                                    self.type_encodings.push(type_encoding);
+                                    return;
                                 }
                             }
                         } else {
-                            todo!()
-                            // return SupportedTypes::SupportedTypes(SupportedTypes::Slice(Slice {
-                            //     size: Number::U32,
-                            //     inner: match as_str.as_str() {
-                            //         "u8" => Number::U8,
-                            //         "u16" => Number::U16,
-                            //         "u32" => Number::U32,
-                            //         _ => panic!("unsupported type"),
-                            //     },
-                            // }));
-                        }
-                    }
-                }
-            }
-        } else if let Type::ImplTrait(tr) = ty {
-            let traits: Vec<_> = tr.bounds.iter().collect();
-            if let &[TypeParamBound::Trait(tr)] = traits.as_slice() {
-                let segments: Vec<_> = tr.path.segments.iter().collect();
-                if let &[simple] = segments.as_slice() {
-                    if simple.ident == "Writable" {
-                        if let PathArguments::AngleBracketed(gen) = &simple.arguments {
-                            let generics: Vec<_> = gen.args.iter().collect();
-                            if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
-                                let segments: Vec<_> = t.path.segments.iter().collect();
-                                if let &[simple] = segments.as_slice() {
-                                    // let size = match simple.ident.to_string().as_str() {
-                                    //     "u8" => Number::U8,
-                                    //     "u16" => Number::U16,
-                                    //     "u32" => Number::U32,
-                                    //     _ => panic!("unsupported type"),
-                                    // };
-                                    // return SupportedTypes::SupportedTypes(
-                                    //     SupportedTypes::Writable(Writable { size_type: size }),
-                                    // );
-                                    todo!()
+                            let encoder = match as_str.as_str() {
+                                "u8" => {
+                                    encoders.insert(NumberEncoderFactory::<1>, builder);
+                                    encoders.get_or_insert_with(SliceFactory::<1, 4>, builder)
                                 }
-                            }
-                        } else {
-                            // return SupportedTypes::SupportedTypes(SupportedTypes::Writable(
-                            //     Writable {
-                            //         size_type: Number::U32,
-                            //     },
-                            // ));
-                            todo!()
+                                "u16" => {
+                                    encoders.insert(NumberEncoderFactory::<2>, builder);
+                                    encoders.get_or_insert_with(SliceFactory::<2, 4>, builder)
+                                }
+                                "u32" => {
+                                    encoders.insert(NumberEncoderFactory::<4>, builder);
+                                    encoders.get_or_insert_with(SliceFactory::<4, 4>, builder)
+                                }
+                                _ => panic!("unsupported type"),
+                            };
+                            let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                            self.type_encodings.push(type_encoding);
+                            return;
                         }
                     }
                 }

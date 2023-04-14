@@ -56,10 +56,11 @@ use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
+use std::collections::HashSet;
 use std::ops::Deref;
 use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit};
 use syn::{parse_quote, ForeignItemFn};
-use types::string::{GeneralString, GeneralStringFactory};
+use types::string::GeneralStringFactory;
 
 mod builder;
 mod encoder;
@@ -306,9 +307,25 @@ impl Bindings {
 
         let pre_run_metadata = self.builder.pre_run_js();
 
+        let all_variables: HashSet<&str> = self
+            .functions
+            .iter()
+            .flat_map(|f| f.variables.iter().map(|s| s.as_str()))
+            .collect();
+
+        let declarations = if all_variables.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "let {};",
+                all_variables.into_iter().collect::<Vec<_>>().join(",")
+            )
+        };
+
         format!(
             r#"let m,p,ls,lss,d,t,op,i,e,z,metaflags;
             {initialize}
+            {declarations}
             export function create(r){{
                 d=r;
             }}

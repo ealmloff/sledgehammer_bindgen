@@ -20,7 +20,7 @@ pub struct GeneralString {
 impl CreateEncoder for GeneralStringFactory {
     type Output = GeneralString;
 
-    fn new(&self, builder: &mut crate::builder::BindingBuilder) -> GeneralString {
+    fn create(&self, builder: &mut crate::builder::BindingBuilder) -> GeneralString {
         let str_moved_flag = builder.flag();
         let str_tiny_flag = builder.flag();
         let str_used_flag = builder.flag();
@@ -60,7 +60,7 @@ impl Encoder for GeneralString {
     }
 
     fn global_js(&self) -> String {
-        format!("let s,lsp,sp,sl; let c = new TextDecoder();")
+        "let s,lsp,sp,sl; let c = new TextDecoder();".to_string()
     }
 
     fn pre_run_js(&self) -> String {
@@ -153,7 +153,7 @@ pub struct StrEncoderFactory<const S: u32> {
 impl<const S: u32> CreateEncoder for StrEncoderFactory<S> {
     type Output = StrEncoder<S>;
 
-    fn new(&self, builder: &mut crate::builder::BindingBuilder) -> Self::Output {
+    fn create(&self, builder: &mut crate::builder::BindingBuilder) -> Self::Output {
         StrEncoder {
             size_type: NumberEncoder::new(builder),
             cache_name: self
@@ -241,7 +241,10 @@ impl<const S: u32> Encode for StrEncoder<S> {
         let encode = quote! {
             let #len = #name.len();
             let #char_len: usize = #name.chars().map(|c| c.len_utf16()).sum();
-            let #char_len = #char_len.try_into().unwrap();
+            let #char_len = {
+                use std::convert::TryInto;
+                #char_len.try_into().unwrap()
+            };
             #write_len
             let old_len = self.str_buffer.len();
             unsafe {

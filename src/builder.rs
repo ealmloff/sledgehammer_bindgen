@@ -7,16 +7,9 @@ use crate::select_bits_js_inner;
 pub struct BindingBuilder {
     js_u32_count: usize,
     js_flag_count: usize,
-    js_var_count: usize,
 }
 
 impl BindingBuilder {
-    pub fn unique_var(&mut self) -> String {
-        let old = self.js_var_count;
-        self.js_var_count += 1;
-        format!("v{}", old)
-    }
-
     pub fn u32(&mut self) -> RustJSU32 {
         let id = self.js_u32_count;
         self.js_u32_count += 1;
@@ -47,7 +40,7 @@ impl BindingBuilder {
     }
 
     pub fn pre_run_js(&self) -> String {
-        format!("metaflags=m.getUint32(d,true);")
+        "metaflags=m.getUint32(d,true);".to_string()
     }
 }
 
