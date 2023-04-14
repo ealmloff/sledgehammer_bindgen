@@ -17,10 +17,9 @@ quote = "1.0"
 
 [lib]
 proc-macro = true
-ux = "0.1.5"
 
 [dev-dependencies]
-sledgehammer_utils = "0.1.0"
+sledgehammer_utils = { path = "d:/users/desktop/github/sledgehammer_utils" }
 wasm-bindgen = "0.2"
 
 [dev-dependencies.web-sys]
