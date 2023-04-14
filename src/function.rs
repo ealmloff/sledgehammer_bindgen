@@ -1,8 +1,11 @@
 use crate::types::{numbers::NumberEncoderFactory, string::StrEncoderFactory};
 use std::{collections::HashMap, ops::Deref, string};
 
-use quote::{__private::TokenStream as TokenStream2, quote, };
-use syn::{Expr, GenericArgument, Ident, ItemFn, Lit, Pat, PathArguments, Type, TypeParamBound,parse_quote};
+use quote::{__private::TokenStream as TokenStream2, quote};
+use syn::{
+    parse_quote, Expr, GenericArgument, Ident, ItemFn, Lit, Pat, PathArguments, Type,
+    TypeParamBound,
+};
 
 use crate::{
     builder::BindingBuilder,
@@ -145,18 +148,22 @@ impl FunctionBinding {
                 .as_ref()
                 .filter(|l| l.ident == "static")
                 .is_some();
+            let ty = if static_str {
+                parse_quote!(&'static str)
+            } else {
+                parse_quote!(&str)
+            };
             if let Type::Path(segments) = &*ty_ref.elem {
                 let segments: Vec<_> = segments.path.segments.iter().collect();
                 if let &[simple] = segments.as_slice() {
                     let as_str = simple.ident.to_string().to_lowercase();
                     if as_str == "str" {
+                        let mut cache = None;
                         if let PathArguments::AngleBracketed(gen) = &simple.arguments {
                             let generics: Vec<_> = gen.args.iter().collect();
                             if let GenericArgument::Type(Type::Path(t)) = &generics[0] {
                                 let segments: Vec<_> = t.path.segments.iter().collect();
                                 if let &[simple] = segments.as_slice() {
-                                    println!("{simple:#?}");
-                                    let mut cache = None;
                                     if let Some(GenericArgument::Type(Type::Path(t))) =
                                         &generics.get(1)
                                     {
@@ -165,6 +172,7 @@ impl FunctionBinding {
                                             cache = Some(simple.ident.clone());
                                         }
                                     }
+                                    println!("cache: {:?}", cache);
                                     let encoder = match simple.ident.to_string().as_str() {
                                         "u8" => {
                                             encoders.insert(NumberEncoderFactory::<1>, builder);
@@ -199,7 +207,7 @@ impl FunctionBinding {
                                         _ => panic!("unsupported type"),
                                     };
 
-                                    let type_encoding = TypeEncoding::new(ident, parse_quote!(&str), encoder);
+                                    let type_encoding = TypeEncoding::new(ident, ty, encoder);
                                     self.type_encodings.push(type_encoding);
                                     return;
                                 }
@@ -208,7 +216,7 @@ impl FunctionBinding {
                         encoders.insert(NumberEncoderFactory::<4>, builder);
                         let encoder = encoders.get_or_insert_with(
                             StrEncoderFactory::<4> {
-                                cache_name: None,
+                                cache_name: cache,
                                 static_str,
                             },
                             builder,

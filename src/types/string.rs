@@ -45,7 +45,7 @@ impl Encode for GeneralString {
         todo!()
     }
 
-    fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
+    fn encode_rust(&self, _: &Ident) -> TokenStream2 {
         todo!()
     }
 }
@@ -156,8 +156,11 @@ impl<const S: u32> CreateEncoder for StrEncoderFactory<S> {
     fn new(&self, builder: &mut crate::builder::BindingBuilder) -> Self::Output {
         StrEncoder {
             size_type: NumberEncoder::new(builder),
-            cache_name: None,
-            static_str: false,
+            cache_name: self
+                .cache_name
+                .clone()
+                .map(|name| (name, NumberEncoder::new(builder))),
+            static_str: self.static_str,
         }
     }
 
@@ -172,8 +175,16 @@ impl<const S: u32> CreateEncoder for StrEncoderFactory<S> {
 
 impl<const S: u32> Encoder for StrEncoder<S> {
     fn rust_type(&self) -> Type {
-        if let Some((cache, _)) = &self.cache_name {
-            parse_quote! {()}
+        if self.cache_name.is_some() {
+            if self.static_str {
+                parse_quote! {
+                    sledgehammer_utils::ConstLru<*const str, NonHashBuilder, 128, 256>
+                }
+            } else {
+                parse_quote! {
+                    sledgehammer_utils::LruCache
+                }
+            }
         } else {
             parse_quote! {()}
         }
@@ -201,8 +212,8 @@ impl<const S: u32> Encoder for StrEncoder<S> {
                         {cache}_tmp2 = {get_u8};
                         if({cache}_tmp2 & {last_bit_mask}){{
                             {cache}_tmp1=s.substring(sp,sp+={read_string_length});
-                            {cache}[{cache}_tmp2&{cache_idx_mask}]={cache}_tmp;
-                            return {cache}_tmp;
+                            {cache}[{cache}_tmp2&{cache_idx_mask}]={cache}_tmp1;
+                            return {cache}_tmp1;
                         }}
                         else{{
                             return {cache}[{cache}_tmp2&{cache_idx_mask}];
@@ -245,7 +256,7 @@ impl<const S: u32> Encode for StrEncoder<S> {
                 if self.static_str {
                     let write_size = size.encode_rust(&Ident::new("cache_id", Span::call_site()));
                     quote! {
-                        let (_id, _new) = #cache.push(#name);
+                        let (_id, _new) = self.#cache.push(#name);
                         if _new {
                             let cache_id = 128 | _id;
                             #write_size
@@ -259,22 +270,22 @@ impl<const S: u32> Encode for StrEncoder<S> {
                 } else {
                     let write_size = size.encode_rust(&Ident::new("cache_id", Span::call_site()));
                     quote! {
-                        if let Some(&id) = #cache.get(#name){
+                        if let Some(&id) = self.#cache.get(#name){
                             let cache_id = id;
                             #write_size
                         }
                         else {
-                            let cache_len = #cache.len() as u8;
+                            let cache_len = self.#cache.len() as u8;
                             let id = if cache_len == 128 {
-                                if let Some((_, id)) = #cache.pop_lru() {
-                                    #cache.put(#name.to_string(), id);
+                                if let Some((_, id)) = self.#cache.pop_lru() {
+                                    self.#cache.put(#name.to_string(), id);
                                     id
                                 }
                                 else {
                                     unreachable!()
                                 }
                             } else {
-                                #cache.put(#name.to_string(), cache_len);
+                                self.#cache.put(#name.to_string(), cache_len);
                                 cache_len
                             };
                             let cache_id =  128 | id;

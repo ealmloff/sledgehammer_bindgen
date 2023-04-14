@@ -344,6 +344,7 @@ impl Bindings {
 
         let ty = &self.buffer;
         quote! {
+            #[derive(Default)]
             struct NonHashBuilder;
             impl std::hash::BuildHasher for NonHashBuilder {
                 type Hasher = NonHash;
