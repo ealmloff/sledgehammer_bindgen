@@ -455,6 +455,11 @@ impl Bindings {
             .iter()
             .map(|(_, e)| e.pre_run_rust())
             .collect::<Vec<_>>();
+        let memory_moved_rust = self
+            .encoders
+            .iter()
+            .map(|(_, e)| e.memory_moved_rust())
+            .collect::<Vec<_>>();
         let first_run_states = self
             .encoders
             .iter()
@@ -544,6 +549,7 @@ impl Bindings {
                         if new_mem_size != get_last_mem_size() {
                             set_last_mem_size(new_mem_size);
                             update_memory(wasm_bindgen::memory());
+                            #(#memory_moved_rust)*
                         }
 
                         run();

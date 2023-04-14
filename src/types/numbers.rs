@@ -96,6 +96,10 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
         self.array_moved_flag.write_rust(parse_quote!(true))
     }
 
+    fn memory_moved_rust(&self) -> TokenStream2 {
+        self.init_rust()
+    }
+
     fn pre_run_rust(&self) -> TokenStream2 {
         let ident = self.rust_ident();
         let write_ptr = self

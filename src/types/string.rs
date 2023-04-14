@@ -71,7 +71,6 @@ impl Encoder for GeneralString {
         let len = self.len.read_js();
         format!(
             r#"if ({moved}){{
-                console.log("moved");
                 lsp = {ptr};
             }}
             if ({used}) {{
@@ -105,6 +104,10 @@ impl Encoder for GeneralString {
         self.str_moved_flag.write_rust(parse_quote!(true))
     }
 
+    fn memory_moved_rust(&self) -> TokenStream2 {
+        self.init_rust()
+    }
+
     fn pre_run_rust(&self) -> TokenStream2 {
         let ident = <Self as Encoder>::rust_ident(self);
         let write_ptr = self
@@ -113,7 +116,9 @@ impl Encoder for GeneralString {
         let write_small = self
             .str_tiny_flag
             .write_rust(parse_quote!(self.#ident.len() < 100 && !self.str_buffer.is_ascii()));
-        let write_used = self.str_used_flag.write_rust(parse_quote!(true));
+        let write_used = self
+            .str_used_flag
+            .write_rust(parse_quote!(!self.str_buffer.is_empty()));
         let len = self.len.write_rust(parse_quote!(self.#ident.len() as u32));
         let read_ptr = self.str_ptr.get_rust();
         let moved = self
@@ -124,10 +129,10 @@ impl Encoder for GeneralString {
             if !self.str_buffer.is_empty() {
                 #moved
                 #write_small
-                #write_used
                 #write_ptr
                 #len
             }
+            #write_used
         }
     }
 

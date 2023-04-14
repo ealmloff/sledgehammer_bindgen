@@ -34,6 +34,10 @@ pub trait Encoder {
         quote!()
     }
 
+    fn memory_moved_rust(&self) -> TokenStream2 {
+        quote!()
+    }
+
     fn pre_run_rust(&self) -> TokenStream2 {
         quote!()
     }
@@ -74,6 +78,10 @@ impl Encoder for EncodeTraitObject {
 
     fn global_rust(&self) -> TokenStream2 {
         self.0.global_rust()
+    }
+
+    fn memory_moved_rust(&self) -> TokenStream2 {
+        self.0.memory_moved_rust()
     }
 
     fn init_rust(&self) -> TokenStream2 {
