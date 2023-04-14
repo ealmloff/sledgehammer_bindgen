@@ -1,8 +1,5 @@
-use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
-    ops::{Deref, DerefMut},
-};
+use crate::types::string::StrEncoderFactory;
+use std::{collections::HashMap, ops::Deref, string};
 
 use quote::{__private::TokenStream as TokenStream2, quote};
 use syn::{Expr, GenericArgument, Ident, ItemFn, Lit, Pat, PathArguments, Type, TypeParamBound};
@@ -55,7 +52,7 @@ impl FunctionBinding {
                     } else {
                         panic!("only simple idents are supported")
                     };
-                    myself.add(encoders, builder, &ident, ty.ty.deref().clone())
+                    myself.add(encoders, builder, ident, ty.ty.deref().clone())
                 }
             }
         }
@@ -125,23 +122,30 @@ impl FunctionBinding {
             let segments: Vec<_> = segments.path.segments.iter().collect();
             if let &[simple] = segments.as_slice() {
                 let as_str = simple.ident.to_string();
-                let encoder =
-                    match as_str.as_str() {
-                        "u8" => encoders
-                            .get_or_insert_with(|| numbers::NumberEncoder::<1>::new(builder)),
-                        "u16" => encoders
-                            .get_or_insert_with(|| numbers::NumberEncoder::<2>::new(builder)),
-                        "u32" => encoders
-                            .get_or_insert_with(|| numbers::NumberEncoder::<4>::new(builder)),
-                        _ => panic!("unsupported type"),
-                    };
+                let encoder = match as_str.as_str() {
+                    "u8" => {
+                        encoders.get_or_insert_with(numbers::NumberEncoderFactory::<1>, builder)
+                    }
+                    "u16" => {
+                        encoders.get_or_insert_with(numbers::NumberEncoderFactory::<2>, builder)
+                    }
+                    "u32" => {
+                        encoders.get_or_insert_with(numbers::NumberEncoderFactory::<4>, builder)
+                    }
+                    _ => panic!("unsupported type"),
+                };
 
                 let type_encoding = TypeEncoding::new(ident, ty, encoder);
                 self.type_encodings.push(type_encoding);
                 return;
             }
-        } else if let Type::Reference(ty) = ty {
-            if let Type::Path(segments) = &*ty.elem {
+        } else if let Type::Reference(ty_ref) = &ty {
+            let static_str = ty_ref
+                .lifetime
+                .as_ref()
+                .filter(|l| l.ident == "static")
+                .is_some();
+            if let Type::Path(segments) = &*ty_ref.elem {
                 let segments: Vec<_> = segments.path.segments.iter().collect();
                 if let &[simple] = segments.as_slice() {
                     let as_str = simple.ident.to_string();
@@ -160,40 +164,52 @@ impl FunctionBinding {
                                             cache = Some(simple.ident.clone());
                                         }
                                     }
-                                    todo!()
-                                    // return SupportedTypes::SupportedTypes(SupportedTypes::Str(
-                                    //     Str {
-                                    //         size_type: match simple.ident.to_string().as_str() {
-                                    //             "u8" => Number::U8,
-                                    //             "u16" => Number::U16,
-                                    //             "u32" => Number::U32,
-                                    //             _ => panic!("unsupported type"),
-                                    //         },
-                                    //         cache_name: cache,
-                                    //         static_str: ty
-                                    //             .lifetime
-                                    //             .as_ref()
-                                    //             .filter(|l| l.ident == "static")
-                                    //             .is_some(),
-                                    //     },
-                                    // ));
+                                    let encoder = match simple.ident.to_string().as_str() {
+                                        "u8" => encoders.get_or_insert_with(
+                                            StrEncoderFactory::<1> {
+                                                cache_name: cache,
+                                                static_str,
+                                            },
+                                            builder,
+                                        ),
+                                        "u16" => encoders.get_or_insert_with(
+                                            StrEncoderFactory::<2> {
+                                                cache_name: cache,
+                                                static_str,
+                                            },
+                                            builder,
+                                        ),
+                                        "u32" => encoders.get_or_insert_with(
+                                            StrEncoderFactory::<4> {
+                                                cache_name: cache,
+                                                static_str,
+                                            },
+                                            builder,
+                                        ),
+                                        _ => panic!("unsupported type"),
+                                    };
+
+                                    let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                                    self.type_encodings.push(type_encoding);
+                                    return;
                                 }
                             }
                         }
-                        todo!()
-                        // return SupportedTypes::SupportedTypes(SupportedTypes::Str(Str {
-                        //     size_type: Number::U32,
-                        //     cache_name: None,
-                        //     static_str: ty
-                        //         .lifetime
-                        //         .as_ref()
-                        //         .filter(|l| l.ident == "static")
-                        //         .is_some(),
-                        // }));
+                        let encoder = encoders.get_or_insert_with(
+                            StrEncoderFactory::<4> {
+                                cache_name: None,
+                                static_str,
+                            },
+                            builder,
+                        );
+
+                        let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                        self.type_encodings.push(type_encoding);
+                        return;
                     }
                 }
             }
-            if let Type::Slice(slice) = &*ty.elem {
+            if let Type::Slice(slice) = &*ty_ref.elem {
                 if let Type::Path(segments) = &*slice.elem {
                     let segments: Vec<_> = segments.path.segments.iter().collect();
                     if let &[simple] = segments.as_slice() {

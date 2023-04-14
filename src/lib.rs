@@ -51,15 +51,15 @@
 //!  - See this benchmark: <https://jsbench.me/csl9lfauwi/2>
 use crate::encoder::Encoder;
 use builder::{BindingBuilder, RustJSFlag, RustJSU32};
-use encoder::{Encode, Encoders};
+use encoder::Encoders;
 use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
-use quote::{quote, ToTokens};
-use std::collections::HashSet;
+use quote::quote;
 use std::ops::Deref;
-use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit, Pat, Type};
-use syn::{parse_quote, ForeignItemFn, ItemFn};
+use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit};
+use syn::{parse_quote, ForeignItemFn};
+use types::string::{GeneralString, GeneralStringFactory};
 
 mod builder;
 mod encoder;
@@ -173,6 +173,7 @@ impl Parse for Bindings {
         let mut intialize = String::new();
         let mut encoders = Encoders::default();
         let mut builder = BindingBuilder::default();
+        encoders.insert(GeneralStringFactory, &mut builder);
         for item in extren_block.content.unwrap().1 {
             match item {
                 syn::Item::Const(cnst) => {
@@ -241,35 +242,6 @@ fn with_n_1_bits(n: usize) -> u32 {
     (1u64 << n as u64).saturating_sub(1) as u32
 }
 
-fn read_size(size: usize, s: &mut String) {
-    match size {
-        3..=4 => s.push_str("m.getUint32(p,true)"),
-        2 => s.push_str("m.getUint16(p,true)"),
-        1..=1 => s.push_str("m.getUint8(p,true)"),
-        _ => panic!("invalid size"),
-    }
-}
-
-struct Read {
-    size: usize,
-    pos: usize,
-}
-
-impl Read {
-    fn new(s: &mut String, mut len: usize) -> Self {
-        s.push_str("i=");
-        read_size(len, s);
-        s.push(';');
-        Self { size: len, pos: 0 }
-    }
-}
-
-fn select_bits_js(read: &Read, len: usize) -> String {
-    let size = read.size * 8;
-    let pos = read.pos * 8;
-    select_bits_js_inner("i", size, pos, len)
-}
-
 fn select_bits_js_inner(from: &str, size: usize, pos: usize, len: usize) -> String {
     if len == size {
         assert!(pos == 0);
@@ -335,18 +307,16 @@ impl Bindings {
         let pre_run_metadata = self.builder.pre_run_js();
 
         format!(
-            r#"let m,p,ls,lss,sp,d,t,c,s,sl,op,i,e,z,metaflags;
+            r#"let m,p,ls,lss,d,t,op,i,e,z,metaflags;
             {initialize}
             export function create(r){{
                 d=r;
-                c=new TextDecoder('utf-8',{{fatal:true}})
             }}
             export function update_memory(b){{
                 m=new DataView(b.buffer)
             }}
             export function run(){{
                 {pre_run_metadata}
-                t=m.getUint8(d,true);
                 if({msg_ptr_moved}){{
                     ls={read_msg_ptr};
                 }}
@@ -509,8 +479,8 @@ impl Bindings {
                         msg: Vec::new(),
                         current_op_batch_idx: 0,
                         current_op_byte_idx: #reads_per_u32,
-                        #( #states_default )*
                         #meta_ident: #meta_init,
+                        #( #states_default )*
                     }
                 }
             }

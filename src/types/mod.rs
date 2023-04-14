@@ -1,4 +1,4 @@
 pub mod numbers;
 // mod slice;
-// mod string;
+pub mod string;
 // mod writable;

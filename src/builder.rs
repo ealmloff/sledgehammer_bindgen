@@ -90,11 +90,7 @@ impl RustJSFlag {
         let id = self.id;
 
         quote! {
-            if #value {
-                self.metadata[0].set(self.metadata[0].get() | (1 << #id));
-            } else {
-                self.metadata[0].set(self.metadata[0].get() & !(1 << #id));
-            }
+            self.metadata[0].set(if #value { self.metadata[0].get() | (1 << #id) } else { self.metadata[0].get() & !(1 << #id) });
         }
     }
 }

@@ -1,8 +1,4 @@
-use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
-    ops::Deref,
-};
+use std::{any::Any, collections::HashMap, ops::Deref};
 
 use quote::{__private::TokenStream as TokenStream2, quote};
 use syn::{Ident, Type};
@@ -10,7 +6,11 @@ use syn::{Ident, Type};
 use crate::builder::BindingBuilder;
 
 pub trait CreateEncoder {
-    fn new(builder: &mut BindingBuilder) -> Self;
+    type Output;
+
+    fn new(&self, builder: &mut BindingBuilder) -> Self::Output;
+
+    fn rust_ident(&self) -> Ident;
 }
 
 pub trait Encoder {
@@ -26,7 +26,9 @@ pub trait Encoder {
 
     fn rust_ident(&self) -> Ident;
 
-    fn global_rust(&self) -> TokenStream2;
+    fn global_rust(&self) -> TokenStream2 {
+        quote!()
+    }
 
     fn init_rust(&self) -> TokenStream2 {
         quote!()
@@ -99,11 +101,11 @@ impl Encode for EncodeTraitObject {
 
 #[derive(Default)]
 pub struct Encoders {
-    encoders: HashMap<TypeId, EncodeTraitObject>,
+    encoders: HashMap<Ident, EncodeTraitObject>,
 }
 
 impl Deref for Encoders {
-    type Target = HashMap<TypeId, EncodeTraitObject>;
+    type Target = HashMap<Ident, EncodeTraitObject>;
 
     fn deref(&self) -> &Self::Target {
         &self.encoders
@@ -111,13 +113,24 @@ impl Deref for Encoders {
 }
 
 impl Encoders {
-    pub fn get_or_insert_with<T: DynEncode>(
+    pub fn insert<T: CreateEncoder<Output = O>, O: DynEncode>(
         &mut self,
-        ty: impl FnOnce() -> T,
+        factory: T,
+        builder: &mut BindingBuilder,
+    ) {
+        let id = factory.rust_ident();
+        self.encoders
+            .insert(id, EncodeTraitObject(Box::new(factory.new(builder))));
+    }
+
+    pub fn get_or_insert_with<T: CreateEncoder<Output = O>, O: DynEncode>(
+        &mut self,
+        factory: T,
+        builder: &mut BindingBuilder,
     ) -> &mut EncodeTraitObject {
-        let id = TypeId::of::<T>();
+        let id = factory.rust_ident();
         self.encoders
             .entry(id)
-            .or_insert_with(|| EncodeTraitObject(Box::new(ty())))
+            .or_insert_with(|| EncodeTraitObject(Box::new(factory.new(builder))))
     }
 }

@@ -22,7 +22,7 @@ impl<const S: u32> NumberEncoder<S> {
         }
     }
 
-    fn size(&self) -> u32 {
+    pub fn size(&self) -> u32 {
         match S {
             1 => 8,
             2 => 16,
@@ -32,13 +32,26 @@ impl<const S: u32> NumberEncoder<S> {
     }
 }
 
-impl<const S: u32> CreateEncoder for NumberEncoder<S> {
-    fn new(builder: &mut crate::builder::BindingBuilder) -> Self {
+pub struct NumberEncoderFactory<const S: u32>;
+
+impl<const S: u32> CreateEncoder for NumberEncoderFactory<S> {
+    type Output = NumberEncoder<S>;
+
+    fn new(&self, builder: &mut crate::builder::BindingBuilder) -> Self::Output {
         let array_moved_flag = builder.flag();
         let array_ptr = builder.u32();
-        Self {
+        NumberEncoder {
             array_moved_flag,
             array_ptr,
+        }
+    }
+
+    fn rust_ident(&self) -> Ident {
+        match S {
+            1 => parse_quote! {U8},
+            2 => parse_quote! {U16},
+            4 => parse_quote! {U32},
+            _ => panic!("Invalid number size"),
         }
     }
 }
@@ -72,15 +85,11 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
 
     fn rust_ident(&self) -> Ident {
         match S {
-            1 => parse_quote! {buf_u8},
-            2 => parse_quote! {buf_u16},
-            4 => parse_quote! {buf_u32},
+            1 => parse_quote! {u8_arr},
+            2 => parse_quote! {u16_arr},
+            4 => parse_quote! {u32_arr},
             _ => panic!("Invalid number size"),
         }
-    }
-
-    fn global_rust(&self) -> TokenStream2 {
-        quote! {}
     }
 
     fn init_rust(&self) -> TokenStream2 {
@@ -89,8 +98,18 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
 
     fn pre_run_rust(&self) -> TokenStream2 {
         let ident = self.rust_ident();
-        self.array_ptr
-            .write_rust(parse_quote!(self.#ident.as_ptr() as u32))
+        let write_ptr = self
+            .array_ptr
+            .write_rust(parse_quote!(self.#ident.as_ptr() as u32));
+        let read_ptr = self.array_ptr.get_rust();
+        let moved = self
+            .array_moved_flag
+            .write_rust(parse_quote!(#read_ptr != self.#ident.as_ptr() as u32));
+
+        quote! {
+            #moved
+            #write_ptr
+        }
     }
 
     fn post_run_rust(&self) -> TokenStream2 {
@@ -101,38 +120,16 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
     }
 }
 
-impl Encode for NumberEncoder<1> {
+impl<const S: u32> Encode for NumberEncoder<S> {
     fn encode_js(&self) -> String {
-        "u8buf[u8bufp++]".to_string()
+        let size = self.size();
+        format!("u{size}buf[u{size}bufp++]")
     }
 
     fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
+        let rust_ident = self.rust_ident();
         quote! {
-            self.buf_u8.push(#ident);
-        }
-    }
-}
-
-impl Encode for NumberEncoder<2> {
-    fn encode_js(&self) -> String {
-        "u16buf[u16bufp++]".to_string()
-    }
-
-    fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
-        quote! {
-            self.buf_u16.push(#ident);
-        }
-    }
-}
-
-impl Encode for NumberEncoder<4> {
-    fn encode_js(&self) -> String {
-        "u32buf[u32bufp++]".to_string()
-    }
-
-    fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
-        quote! {
-            self.buf_u32.push(#ident);
+            self.#rust_ident.push(#ident);
         }
     }
 }
