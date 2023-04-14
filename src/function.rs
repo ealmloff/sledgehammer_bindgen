@@ -1,8 +1,16 @@
-use crate::types::{numbers::NumberEncoderFactory, slice::SliceFactory, string::StrEncoderFactory};
+use crate::types::{
+    numbers::NumberEncoderFactory,
+    slice::SliceFactory,
+    string::{GeneralStringFactory, StrEncoderFactory},
+    writable::WritableEncoderFactory,
+};
 use std::ops::Deref;
 
 use quote::{__private::TokenStream as TokenStream2, quote};
-use syn::{parse_quote, Expr, GenericArgument, Ident, ItemFn, Lit, Pat, PathArguments, Type};
+use syn::{
+    parse_quote, Expr, GenericArgument, Ident, ItemFn, Lit, Pat, PathArguments, PathSegment, Type,
+    TypeParamBound,
+};
 
 use crate::{
     builder::BindingBuilder,
@@ -366,6 +374,78 @@ impl FunctionBinding {
                                 _ => panic!("unsupported type"),
                             };
                             let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                            self.type_encodings.push(type_encoding);
+                            return;
+                        }
+                    }
+                }
+            }
+        } else if let Type::ImplTrait(tr) = &ty {
+            let traits: Vec<_> = tr.bounds.iter().collect();
+            if let &[TypeParamBound::Trait(tr)] = traits.as_slice() {
+                let segments: Vec<_> = tr.path.segments.iter().collect();
+                if let &[simple] = segments.as_slice() {
+                    if simple.ident == "Writable" {
+                        if let PathArguments::AngleBracketed(gen) = &simple.arguments {
+                            let generics: Vec<_> = gen.args.iter().collect();
+                            if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
+                                let segments: Vec<_> = t.path.segments.iter().collect();
+                                if let &[simple] = segments.as_slice() {
+                                    encoders.insert(GeneralStringFactory, builder);
+                                    match simple {
+                                        PathSegment {
+                                            ident: as_string,
+                                            arguments: PathArguments::None,
+                                        } => {
+                                            let encoder = match as_string.to_string().as_str() {
+                                                "u8" => {
+                                                    encoders
+                                                        .insert(NumberEncoderFactory::<1>, builder);
+                                                    encoders.get_or_insert_with(
+                                                        WritableEncoderFactory::<1>,
+                                                        builder,
+                                                    )
+                                                }
+                                                "u16" => {
+                                                    encoders
+                                                        .insert(NumberEncoderFactory::<2>, builder);
+                                                    encoders.get_or_insert_with(
+                                                        WritableEncoderFactory::<2>,
+                                                        builder,
+                                                    )
+                                                }
+                                                "u32" => {
+                                                    encoders
+                                                        .insert(NumberEncoderFactory::<4>, builder);
+                                                    encoders.get_or_insert_with(
+                                                        WritableEncoderFactory::<4>,
+                                                        builder,
+                                                    )
+                                                }
+                                                _ => panic!("unsupported type"),
+                                            };
+                                            let type_encoding = TypeEncoding::new(
+                                                ident,
+                                                parse_quote!(impl sledgehammer_utils::Writable),
+                                                encoder,
+                                            );
+                                            self.type_encodings.push(type_encoding);
+                                            return;
+                                        }
+                                        _ => panic!("unsupported type"),
+                                    }
+                                }
+                            }
+                        } else {
+                            encoders.insert(GeneralStringFactory, builder);
+                            encoders.insert(NumberEncoderFactory::<4>, builder);
+                            let encoder =
+                                encoders.get_or_insert_with(WritableEncoderFactory::<4>, builder);
+                            let type_encoding = TypeEncoding::new(
+                                ident,
+                                parse_quote!(impl sledgehammer_utils::Writable),
+                                encoder,
+                            );
                             self.type_encodings.push(type_encoding);
                             return;
                         }

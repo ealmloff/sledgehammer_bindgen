@@ -28,7 +28,7 @@ fn main() {
             "nodes[$id$]=document.createElementNS($ns$,$name$);"
         }
 
-        fn set_attribute(id: u16, name: &'static str<u8, name_cache>, val: &str<u8>) {
+        fn set_attribute(id: u16, name: &'static str<u8, name_cache>, val: impl Writable<u8>) {
             "nodes[$id$].setAttribute($name$,$val$);"
         }
 
@@ -44,7 +44,7 @@ fn main() {
             "nodes[$parent$].insertBefore(nodes[$id$],nodes[$id2$]);"
         }
 
-        fn set_text(id: u16, text: &str<u8>) {
+        fn set_text(id: u16, text: impl Writable<u8>) {
             "nodes[$id$].textContent=$text$;"
         }
 
