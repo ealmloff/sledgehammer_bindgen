@@ -118,9 +118,7 @@ impl Encoders {
         factory: T,
         builder: &mut BindingBuilder,
     ) {
-        let id = factory.rust_ident();
-        self.encoders
-            .insert(id, EncodeTraitObject(Box::new(factory.new(builder))));
+        self.get_or_insert_with(factory, builder);
     }
 
     pub fn get_or_insert_with<T: CreateEncoder<Output = O>, O: DynEncode>(

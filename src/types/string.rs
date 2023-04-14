@@ -71,6 +71,7 @@ impl Encoder for GeneralString {
         let len = self.len.read_js();
         format!(
             r#"if ({moved}){{
+                console.log("moved");
                 lsp = {ptr};
             }}
             if ({used}) {{
@@ -95,7 +96,6 @@ impl Encoder for GeneralString {
                 }} else {{
                     s = c.decode(new DataView(m.buffer, lsp, sl));
                 }}
-                console.log(s);
             }}
             sp=0;"#
         )
@@ -121,7 +121,6 @@ impl Encoder for GeneralString {
             .write_rust(parse_quote!(#read_ptr != self.#ident.as_ptr() as u32));
 
         quote! {
-            web_sys::console::log_1(&format!("{:?} {:?}", self.str_buffer, self.#ident.len()).into());
             if !self.str_buffer.is_empty() {
                 #moved
                 #write_small
