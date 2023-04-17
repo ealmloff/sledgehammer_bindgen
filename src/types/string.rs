@@ -115,7 +115,7 @@ impl Encoder for GeneralString {
             .write_rust(parse_quote!(self.#ident.as_ptr() as u32));
         let write_small = self
             .str_tiny_flag
-            .write_rust(parse_quote!(self.#ident.len() < 100 && !self.str_buffer.is_ascii()));
+            .write_rust(parse_quote!(self.#ident.len() < 100 && self.str_buffer.is_ascii()));
         let write_used = self
             .str_used_flag
             .write_rust(parse_quote!(!self.str_buffer.is_empty()));
