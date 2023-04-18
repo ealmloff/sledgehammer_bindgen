@@ -323,7 +323,7 @@ impl Bindings {
         };
 
         format!(
-            r#"let m,p,ls,lss,d,t,op,i,e,z,metaflags;
+            r#"let m,p,ls,d,t,op,i,e,z,metaflags;
             {initialize}
             {declarations}
             export function create(r){{

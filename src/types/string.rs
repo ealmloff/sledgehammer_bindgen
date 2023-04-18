@@ -89,7 +89,7 @@ impl Encoder for GeneralString {
                         );
                         sp += 4;
                     }}
-                    while (sp < lss + sl) {{
+                    while (sp < lsp + sl) {{
                         s += String.fromCharCode(m.getUint8(sp++));
                     }}
                 }} else {{
