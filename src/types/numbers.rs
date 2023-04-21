@@ -30,6 +30,15 @@ impl<const S: u32> NumberEncoder<S> {
             _ => panic!("Invalid number size"),
         }
     }
+
+    pub fn element_type(&self) -> Type {
+        match S {
+            1 => parse_quote! {u8},
+            2 => parse_quote! {u16},
+            4 => parse_quote! {u32},
+            _ => panic!("Invalid number size"),
+        }
+    }
 }
 
 pub struct NumberEncoderFactory<const S: u32>;

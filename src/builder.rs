@@ -57,7 +57,7 @@ impl RustJSU32 {
         let id = self.id;
 
         quote! {
-            self.metadata[#id + 1].set(#value);
+            unsafe {self.metadata.get_unchecked(#id + 1)}.set(#value);
         }
     }
 
@@ -65,7 +65,7 @@ impl RustJSU32 {
         let id = self.id;
 
         quote! {
-            self.metadata[#id + 1].get()
+            unsafe {self.metadata.get_unchecked(#id + 1)}.get()
         }
     }
 }
@@ -83,7 +83,7 @@ impl RustJSFlag {
         let id = self.id;
 
         quote! {
-            self.metadata[0].set(if #value { self.metadata[0].get() | (1 << #id) } else { self.metadata[0].get() & !(1 << #id) });
+            unsafe {self.metadata.get_unchecked(0).set(if #value { self.metadata.get_unchecked(0).get() | (1 << #id) } else { self.metadata.get_unchecked(0).get() & !(1 << #id) })};
         }
     }
 }

@@ -243,12 +243,12 @@ impl<const S: u32> Encode for StrEncoder<S> {
         let len = Ident::new("len", Span::call_site());
         let char_len = Ident::new("char_len", Span::call_site());
         let write_len = self.size_type.encode_rust(&char_len);
+        let char_len_type = self.size_type.element_type();
         let encode = quote! {
             let #len = #name.len();
             let #char_len: usize = #name.chars().map(|c| c.len_utf16()).sum();
             let #char_len = {
-                use std::convert::TryInto;
-                #char_len.try_into().unwrap()
+                #char_len as #char_len_type
             };
             #write_len
             let old_len = self.str_buffer.len();

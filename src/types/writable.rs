@@ -44,14 +44,14 @@ impl<const S: u32> Encode for WritableEncoder<S> {
     fn encode_rust(&self, name: &Ident) -> TokenStream2 {
         let char_len = Ident::new("char_len", Span::call_site());
         let write_len = self.size_type.encode_rust(&char_len);
+        let char_len_type = self.size_type.element_type();
         quote! {
             let prev_len = self.str_buffer.len();
             #name.write(&mut self.str_buffer);
             // the length of the string is the change in length of the string buffer
             let #char_len: usize = unsafe { std::str::from_utf8_unchecked(&self.str_buffer[prev_len..]).chars().map(|c| c.len_utf16()).sum() };
             let #char_len = {
-                use std::convert::TryInto;
-                #char_len.try_into().unwrap()
+                #char_len as #char_len_type
             };
             #write_len
         }
