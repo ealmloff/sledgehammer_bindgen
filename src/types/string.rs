@@ -60,7 +60,7 @@ impl Encoder for GeneralString {
     }
 
     fn global_js(&self) -> String {
-        "let s,lsp,sp,sl; let c = new TextDecoder();".to_string()
+        "let s = \"\";let lsp,sp,sl; let c = new TextDecoder();".to_string()
     }
 
     fn pre_run_js(&self) -> String {
