@@ -69,7 +69,7 @@ impl FunctionBinding {
             }
         }
 
-        let body = if let &[syn::Stmt::Expr(Expr::Lit(lit))] = &function.block.stmts.as_slice() {
+        let body = if let &[syn::Stmt::Expr(Expr::Lit(lit), _)] = &function.block.stmts.as_slice() {
             if let Lit::Str(s) = &lit.lit {
                 s.value()
             } else {
