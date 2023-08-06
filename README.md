@@ -31,7 +31,7 @@ Sledgehammer bindgen provides faster rust batched bindings for js code.
 
 ## String decoding
 
-- Decoding strings are expensive to decode, but the cost doesn't change much with the size of the string. Wasm-bindgen calls TextDecoder.decode for every string. Sledgehammer only calls TextEncoder.decode once per batch.
+- Strings are expensive to decode, but the cost doesn't change much with the size of the string. Wasm-bindgen calls TextDecoder.decode for every string. Sledgehammer only calls TextEncoder.decode once per batch.
 
 - If the string is small, it is faster to decode the string in javascript to avoid the constant overhead of TextDecoder.decode
 
