@@ -346,11 +346,11 @@ const attrs = [
         }
 
         fn first_child(id: u16) {
-            "node[id]=node[id].firstChild;"
+            "nodes[id]=nodes[id].firstChild;"
         }
 
         fn next_sibling(id: u16) {
-            "node[id]=node[id].nextSibling;"
+            "nodes[id]=nodes[id].nextSibling;"
         }
     }
 

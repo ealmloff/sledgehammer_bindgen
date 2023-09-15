@@ -142,6 +142,18 @@ impl Encoder for GeneralString {
             self.#ident.clear();
         }
     }
+
+    fn merge_memory_rust(&self) -> TokenStream2 {
+        let ident = <Self as Encoder>::rust_ident(self);
+        let write_ptr = self.str_ptr.write_rust(parse_quote!(current_ptr));
+        quote! {
+            {
+                #write_ptr
+                current_ptr += self.#ident.len() as u32;
+                self.#ident.iter().copied()
+            }
+        }
+    }
 }
 
 pub struct StrEncoder<const S: u32> {

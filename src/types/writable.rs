@@ -34,6 +34,10 @@ impl<const S: u32> Encoder for WritableEncoder<S> {
     fn rust_ident(&self) -> Ident {
         Ident::new(&format!("writable_{}", S * 8), Span::call_site())
     }
+
+    fn merge_memory_rust(&self) -> TokenStream2 {
+        self.size_type.merge_memory_rust()
+    }
 }
 
 impl<const S: u32> Encode for WritableEncoder<S> {

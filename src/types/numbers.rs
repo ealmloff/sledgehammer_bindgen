@@ -75,9 +75,11 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
         let moved = self.array_moved_flag.read_js();
         let ptr = self.array_ptr.read_js();
         let size = self.size();
+        let size_in_bytes = size / 8;
         format!(
             "if ({moved}){{
-                u{size}buf=new Uint{size}Array(m.buffer,{ptr})
+                t = {ptr};
+                u{size}buf=new Uint{size}Array(m.buffer,t,((m.buffer.byteLength-t)-(m.buffer.byteLength-t)%{size_in_bytes})/{size_in_bytes});
             }}
             u{size}bufp=0;"
         )
@@ -129,6 +131,22 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
         let ident = self.rust_ident();
         quote! {
             self.#ident.clear();
+        }
+    }
+
+    fn merge_memory_rust(&self) -> TokenStream2 {
+        let ident = self.rust_ident();
+        let write_ptr = self.array_ptr.write_rust(parse_quote!(current_ptr));
+        quote! {
+            // align the array pointer so that it is a multiple of N
+            {
+                let buffer_size = current_ptr % #S;
+                let zeroed_buffer = std::iter::repeat(0u8).take(buffer_size as usize);
+                current_ptr += buffer_size * #S;
+                #write_ptr
+                current_ptr += self.#ident.len() as u32 * #S;
+                zeroed_buffer.chain(self.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()))
+            }
         }
     }
 }
