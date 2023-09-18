@@ -1,13 +1,16 @@
-#![allow(unused)]
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
+
 use sledgehammer_bindgen::bindgen;
-use web_sys::{console, Node};
+use wry::http::Response;
 
-fn main() {
-    #[bindgen]
-    mod js {
-        struct Channel;
+#[bindgen]
+mod js {
+    struct Channel;
 
-        const JS: &str = r#"const nodes = [document.getElementById("main")];
+    const JS: &str = r#"const nodes = [document.getElementById("main")];
 export function get_node(id){
     return nodes[id];
 }
@@ -304,68 +307,49 @@ const attrs = [
     "wrap",
 ];"#;
 
-        extern "C" {
-            #[wasm_bindgen]
-            fn get_node(id: u16) -> Node;
-        }
-
-        fn create_element(id: u16, element_id: u8) {
-            "nodes[$id$]=document.createElement(els[$element_id$]);"
-        }
-
-        fn set_attribute(id: u16, attribute_id: u8, val: impl Writable<u8>) {
-            "nodes[$id$].setAttribute(attrs[$attribute_id$],$val$);"
-        }
-
-        fn remove_attribute(id: u16, attribute_id: u8) {
-            "nodes[$id$].removeAttribute(attrs[$attribute_id$]);"
-        }
-
-        fn append_child(id: u16, id2: u16) {
-            "nodes[$id$].appendChild(nodes[$id2$]);"
-        }
-
-        fn insert_before(parent: u16, id: u16, id2: u16) {
-            "nodes[$parent$].insertBefore(nodes[$id$],nodes[$id2$]);"
-        }
-
-        fn set_text(id: u16, text: impl Writable<u8>) {
-            "nodes[$id$].textContent=$text$;"
-        }
-
-        fn remove(id: u16) {
-            "nodes[$id$].remove();"
-        }
-
-        fn replace(id: u16, id2: u16) {
-            "nodes[$id$].replaceWith(nodes[$id2$]);"
-        }
-
-        fn clone(id: u16, id2: u16) {
-            "nodes[$id2$]=nodes[$id$].cloneNode(true);"
-        }
-
-        fn first_child(id: u16) {
-            "nodes[id]=nodes[id].firstChild;"
-        }
-
-        fn next_sibling(id: u16) {
-            "nodes[id]=nodes[id].nextSibling;"
-        }
+    fn create_element(id: u16, element_id: u8) {
+        "nodes[$id$]=document.createElement(els[$element_id$]);"
     }
 
-    let mut channel1 = Channel::default();
-    let main = 0;
-    let node1 = 1;
-    let node2 = 2;
-    channel1.create_element(node1, Element::div as u8);
-    channel1.create_element(node2, Element::span as u8);
-    channel1.append_child(node1, node2);
-    channel1.set_text(node2, "Hello World!");
-    channel1.append_child(main, node1);
-    channel1.flush();
+    fn set_attribute(id: u16, attribute_id: u8, val: impl Writable<u8>) {
+        "nodes[$id$].setAttribute(attrs[$attribute_id$],$val$);"
+    }
 
-    console::log_1(&get_node(0).into());
+    fn remove_attribute(id: u16, attribute_id: u8) {
+        "nodes[$id$].removeAttribute(attrs[$attribute_id$]);"
+    }
+
+    fn append_child(id: u16, id2: u16) {
+        "nodes[$id$].appendChild(nodes[$id2$]);"
+    }
+
+    fn insert_before(parent: u16, id: u16, id2: u16) {
+        "nodes[$parent$].insertBefore(nodes[$id$],nodes[$id2$]);"
+    }
+
+    fn set_text(id: u16, text: impl Writable<u8>) {
+        "nodes[$id$].textContent=$text$;"
+    }
+
+    fn remove(id: u16) {
+        "nodes[$id$].remove();"
+    }
+
+    fn replace(id: u16, id2: u16) {
+        "nodes[$id$].replaceWith(nodes[$id2$]);"
+    }
+
+    fn clone(id: u16, id2: u16) {
+        "nodes[$id2$]=nodes[$id$].cloneNode(true);"
+    }
+
+    fn first_child(id: u16) {
+        "node[id]=node[id].firstChild;"
+    }
+
+    fn next_sibling(id: u16) {
+        "node[id]=node[id].nextSibling;"
+    }
 }
 
 #[allow(non_camel_case_types)]
@@ -663,4 +647,103 @@ enum Attribute {
     value,
     width,
     wrap,
+}
+
+fn main() -> wry::Result<()> {
+    use wry::{
+        application::{
+            event::{Event, StartCause, WindowEvent},
+            event_loop::{ControlFlow, EventLoop},
+            window::WindowBuilder,
+        },
+        webview::WebViewBuilder,
+    };
+
+    let event_loop = EventLoop::new();
+    let window = WindowBuilder::new()
+        .with_title("Hello World")
+        .build(&event_loop)?;
+    let first_request = Cell::new(true);
+    let _webview = WebViewBuilder::new(window)?
+        .with_url("dioxus://index.html/")
+        .unwrap()
+        .with_asynchronous_custom_protocol("dioxus".into(), move |_, responder| {
+            if first_request.get() {
+                first_request.set(false);
+                let html = format!(
+                    r#"
+                    <head>
+                    </head>
+                    <body>
+                        <div id="main"></div>
+                        <script>
+                            {}
+                            function wait_for_request() {{
+                                fetch(new Request("dioxus://index.html"))
+                                    .then(response => {{
+                                        response.arrayBuffer()
+                                            .then(bytes => {{
+                                                run_from_bytes(bytes);
+                                                wait_for_request();
+                                            }});
+                                    }})
+                            }}
+
+                            // Wait for the page to load
+                            window.onload = function() {{
+                                wait_for_request();
+                            }}
+                        </script>
+                    </body>
+                    "#,
+                    GENERATED_JS.replace("export", "")
+                );
+                responder.respond(
+                    Response::builder()
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Content-Type", "text/html")
+                        .body(html.as_bytes().to_vec())
+                        .unwrap(),
+                );
+                return;
+            }
+
+            let mut channel1 = Channel::default();
+            let main = 0;
+            let node1 = 1;
+            let node2 = 2;
+            for _ in 0..2 {
+                channel1.create_element(node1, Element::div as u8);
+                channel1.create_element(node2, Element::span as u8);
+                channel1.append_child(node1, node2);
+                let rand1 = rand::random::<u8>();
+                let rand2 = rand::random::<u8>();
+                channel1.set_text(node2, format_args!("{}+{}={}", rand1, rand2, rand1 as usize + rand2 as usize));
+                channel1.append_child(main, node1);
+            }
+
+            let data = channel1.export_memory();
+            let data: Vec<_> = data.collect();
+
+            channel1.reset();
+
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(10));
+                responder.respond(Response::new(data));
+            });
+        })
+        .build()?;
+
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        match event {
+            Event::NewEvents(StartCause::Init) => {}
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => *control_flow = ControlFlow::Exit,
+            _ => (),
+        }
+    });
 }

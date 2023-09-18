@@ -45,6 +45,12 @@ pub trait Encoder {
     fn post_run_rust(&self) -> TokenStream2 {
         quote!()
     }
+
+    fn merge_memory_rust(&self) -> TokenStream2 {
+        quote! {
+            std::iter::empty()
+        }
+    }
 }
 
 pub trait Encode {
@@ -94,6 +100,10 @@ impl Encoder for EncodeTraitObject {
 
     fn post_run_rust(&self) -> TokenStream2 {
         self.0.post_run_rust()
+    }
+
+    fn merge_memory_rust(&self) -> TokenStream2 {
+        self.0.merge_memory_rust()
     }
 }
 

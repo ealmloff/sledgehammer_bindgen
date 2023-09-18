@@ -35,6 +35,15 @@ impl<const N: u32, const S: u32> Encoder for Slice<N, S> {
     fn rust_ident(&self) -> Ident {
         Ident::new(format!("slice{}", N).as_str(), Span::call_site())
     }
+
+    fn merge_memory_rust(&self) -> TokenStream2 {
+        let ptr_iter = self.ptr.merge_memory_rust();
+        let len_iter = self.len.merge_memory_rust();
+
+        quote! {
+            #ptr_iter.chain(#len_iter)
+        }
+    }
 }
 
 impl<const N: u32, const S: u32> Encode for Slice<N, S> {

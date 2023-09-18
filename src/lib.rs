@@ -157,7 +157,7 @@ struct Bindings {
     buffer: Ident,
     functions: Vec<FunctionBinding>,
     foreign_items: Vec<ForeignItemFn>,
-    intialize: String,
+    initialize: String,
     builder: BindingBuilder,
     encoders: Encoders,
     msg_ptr_u32: RustJSU32,
@@ -220,7 +220,7 @@ impl Parse for Bindings {
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
             foreign_items,
-            intialize,
+            initialize: intialize,
             builder,
             encoders,
             msg_ptr_u32,
@@ -270,7 +270,7 @@ fn select_bits_js_inner(from: &str, size: usize, pos: usize, len: usize) -> Stri
 impl Bindings {
     fn js(&mut self) -> String {
         let op_size = function_discriminant_size_bits(self.functions.len() as u32);
-        let initialize = &self.intialize;
+        let initialize = &self.initialize;
 
         let size = function_discriminant_size_bits(self.functions.len() as u32);
         assert!(size <= 8);
@@ -350,6 +350,11 @@ impl Bindings {
                         op>>>={op_size};
                     }}
                 }}
+            }}
+            export function run_from_bytes(bytes){{
+                d = 0;
+                update_memory(new Uint8Array(bytes))
+                run()
             }}"#,
         )
     }
@@ -357,9 +362,33 @@ impl Bindings {
     fn as_tokens(&mut self) -> TokenStream2 {
         let all_js = self.js();
         let channel = self.channel();
-        let foreign_items = &self.foreign_items;
+        
 
-        let ty = &self.buffer;
+        let web_entrypoint = {
+            #[cfg(feature = "web")]
+            {
+                let foreign_items = &self.foreign_items;
+
+                let ty = &self.buffer;
+                quote!{
+                    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
+                    extern "C" {
+                        fn create(metadata_ptr: u32);
+                        fn run();
+                        #[doc = concat!("Runs the serialized message provided")]
+                        #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
+                        pub fn run_from_buffer(buffer: &[u8]);
+                        fn update_memory(memory: wasm_bindgen::JsValue);
+                        #(#foreign_items)*
+                    }
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                quote!()
+            }
+        };
+
         quote! {
             #[derive(Default)]
             struct NonHashBuilder;
@@ -390,16 +419,7 @@ impl Bindings {
             fn get_last_mem_size() -> usize {
                 LAST_MEM_SIZE.load(std::sync::atomic::Ordering::SeqCst)
             }
-            #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
-            extern "C" {
-                fn create(metadata_ptr: u32);
-                fn run();
-                #[doc = concat!("Runs the serialized message provided")]
-                #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
-                pub fn run_from_buffer(buffer: &[u8]);
-                fn update_memory(memory: wasm_bindgen::JsValue);
-                #(#foreign_items)*
-            }
+            #web_entrypoint
             #channel
             const GENERATED_JS: &str = #all_js;
         }
@@ -471,6 +491,23 @@ impl Bindings {
             .map(|(_, e)| e.post_run_rust())
             .collect::<Vec<_>>();
 
+        let export_memory_iters = self
+            .encoders
+            .iter()
+            .map(|(ident, e)| {
+                // Merge the memory of the #ident encoder
+                let comment = quote!(
+                    #[doc = concat!(" The memory of the [`", stringify!(#ident), "`] encoder")]
+                );
+
+                let merge = e.merge_memory_rust();
+                quote! {
+                    #comment
+                    #merge
+                }
+            })
+            .collect::<Vec<_>>();
+
         let meta_type = self.builder.rust_type();
         let meta_ident = self.builder.rust_ident();
         let meta_init = self.builder.rust_init();
@@ -478,6 +515,7 @@ impl Bindings {
         let set_msg_ptr = self
             .msg_ptr_u32
             .write_rust(parse_quote! {self.msg.as_ptr() as u32});
+        let set_exported_msg_ptr = self.msg_ptr_u32.write_rust(parse_quote! {current_ptr});
         let set_msg_moved = self.msg_moved_flag.write_rust(parse_quote! {msg_moved});
         let get_msg_ptr = self.msg_ptr_u32.get_rust();
 
@@ -554,17 +592,44 @@ impl Bindings {
 
                         run();
 
-                        #(#post_run_rust)*
-                        self.current_op_batch_idx = 0;
-                        self.current_op_byte_idx = #reads_per_u32;
-                        self.msg.clear();
+                        self.reset();
                     }
+                }
+
+                pub fn export_memory(&mut self) -> impl Iterator<Item = u8> + '_ {
+                    self.encode_op(#end_msg);
+                    #(#pre_run_rust)*
+
+                    #(#memory_moved_rust)*
+                    let msg_moved = true;
+                    #set_msg_moved
+
+                    let msg = &self.msg;
+                    let meta = &self.#meta_ident;
+
+                    let meta_iter = meta.iter().flat_map(|i| i.get().to_le_bytes().into_iter());
+                    let mut current_ptr = meta.len() as u32 * 4;
+                    #set_exported_msg_ptr
+                    let iter = msg.iter().copied();
+                    current_ptr += msg.len() as u32;
+                    #(
+                        let iter = iter.chain(#export_memory_iters);
+                    )*
+
+                    meta_iter.chain(iter)
+                }
+
+                pub fn reset(&mut self){
+                    #(#post_run_rust)*
+                    self.current_op_batch_idx = 0;
+                    self.current_op_byte_idx = #reads_per_u32;
+                    self.msg.clear();
                 }
 
                 fn update_metadata_ptrs(&mut self) {
                     static FIRST_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
                     let first_run = FIRST_RUN.swap(false, std::sync::atomic::Ordering::Relaxed);
-                    let metadata_ptr =  self.metadata.as_ref().get_ref() as *const _ as u32;
+                    let metadata_ptr = self.metadata.as_ref().get_ref() as *const _ as u32;
 
                     // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
                     if first_run {
@@ -586,24 +651,6 @@ impl Bindings {
                         #set_msg_moved
                     }
                 }
-
-                // TODO: restore serialization
-                // pub fn to_bytes(&mut self) -> Vec<u8> {
-                //     self.encode_op(#end_msg);
-                //     let str_len = self.str_buffer.len();
-                //     let str_all_ascii = self.str_buffer.is_ascii();
-                //     let mut bytes = self.msg.split_off(0);
-                //     let string_start = bytes.len();
-                //     bytes.append(&mut self.str_buffer.split_off(0));
-                //     self.update_metadata_ptrs(0, string_start as u32, str_len, str_all_ascii);
-                //     // SAFETY: we know that the data is valid because we only access it through the mutex
-                //     with_data_mut(|data|{
-                //         bytes.extend_from_slice(data);
-                //     });
-                //     self.current_op_batch_idx = 0;
-                //     self.current_op_byte_idx = #reads_per_u32;
-                //     bytes
-                // }
 
                 #(#methods)*
             }
