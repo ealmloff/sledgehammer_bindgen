@@ -362,9 +362,33 @@ impl Bindings {
     fn as_tokens(&mut self) -> TokenStream2 {
         let all_js = self.js();
         let channel = self.channel();
-        let foreign_items = &self.foreign_items;
+        
 
-        let ty = &self.buffer;
+        let web_entrypoint = {
+            #[cfg(feature = "web")]
+            {
+                let foreign_items = &self.foreign_items;
+
+                let ty = &self.buffer;
+                quote!{
+                    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
+                    extern "C" {
+                        fn create(metadata_ptr: u32);
+                        fn run();
+                        #[doc = concat!("Runs the serialized message provided")]
+                        #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
+                        pub fn run_from_buffer(buffer: &[u8]);
+                        fn update_memory(memory: wasm_bindgen::JsValue);
+                        #(#foreign_items)*
+                    }
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                quote!()
+            }
+        };
+
         quote! {
             #[derive(Default)]
             struct NonHashBuilder;
@@ -395,16 +419,7 @@ impl Bindings {
             fn get_last_mem_size() -> usize {
                 LAST_MEM_SIZE.load(std::sync::atomic::Ordering::SeqCst)
             }
-            #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
-            extern "C" {
-                fn create(metadata_ptr: u32);
-                fn run();
-                #[doc = concat!("Runs the serialized message provided")]
-                #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
-                pub fn run_from_buffer(buffer: &[u8]);
-                fn update_memory(memory: wasm_bindgen::JsValue);
-                #(#foreign_items)*
-            }
+            #web_entrypoint
             #channel
             const GENERATED_JS: &str = #all_js;
         }

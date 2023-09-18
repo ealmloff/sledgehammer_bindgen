@@ -25,3 +25,7 @@ wasm-bindgen = "0.2"
 [dev-dependencies.web-sys]
 version = "0.3"
 features = ["Node", "console"]
+
+[features]
+default = ["web"]
+web = []
