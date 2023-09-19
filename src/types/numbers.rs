@@ -142,7 +142,7 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
             {
                 let buffer_size = current_ptr % #S;
                 let zeroed_buffer = std::iter::repeat(0u8).take(buffer_size as usize);
-                current_ptr += buffer_size * #S;
+                current_ptr += buffer_size;
                 #write_ptr
                 current_ptr += self.#ident.len() as u32 * #S;
                 zeroed_buffer.chain(self.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()))

@@ -683,6 +683,8 @@ fn main() -> wry::Result<()> {
                                     .then(response => {{
                                         response.arrayBuffer()
                                             .then(bytes => {{
+                                                // Don't ask
+                                                // console.log(...new Uint8Array(bytes));
                                                 run_from_bytes(bytes);
                                                 wait_for_request();
                                             }});
@@ -724,11 +726,12 @@ fn main() -> wry::Result<()> {
 
             let data = channel1.export_memory();
             let data: Vec<_> = data.collect();
+            println!("{:?}", data);
 
             channel1.reset();
 
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(1));
                 responder.respond(Response::new(data));
             });
         })
