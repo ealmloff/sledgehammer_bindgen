@@ -171,7 +171,7 @@ impl Parse for Bindings {
         let mut buffer = None;
         let mut functions = Vec::new();
         let mut foreign_items = Vec::new();
-        let mut intialize = String::new();
+        let mut initialize = String::new();
         let mut encoders = Encoders::default();
         let mut builder = BindingBuilder::default();
         encoders.insert(GeneralStringFactory, &mut builder);
@@ -188,7 +188,19 @@ impl Parse for Bindings {
                         } else {
                             panic!("missing body")
                         };
-                        intialize = body;
+                        initialize += &body;
+                    }
+                    if cnst.ident == "JS_FILE" {
+                        let path = if let Expr::Lit(lit) = cnst.expr.deref() {
+                            if let Lit::Str(s) = &lit.lit {
+                                s.value()
+                            } else {
+                                panic!("missing body")
+                            }
+                        } else {
+                            panic!("missing body")
+                        };
+                        initialize += &std::fs::read_to_string(path).unwrap();
                     }
                 }
                 syn::Item::Fn(f) => {
@@ -210,7 +222,7 @@ impl Parse for Bindings {
         }
 
         for encoder in encoders.values() {
-            intialize += &encoder.global_js();
+            initialize += &encoder.global_js();
         }
 
         let msg_ptr_u32 = builder.u32();
@@ -220,7 +232,7 @@ impl Parse for Bindings {
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
             foreign_items,
-            initialize: intialize,
+            initialize,
             builder,
             encoders,
             msg_ptr_u32,
@@ -275,16 +287,6 @@ impl Bindings {
         let size = function_discriminant_size_bits(self.functions.len() as u32);
         assert!(size <= 8);
         let reads_per_u32 = (32 + (size - 1)) / size;
-
-        // TODO: restore run_from_buffer
-        // export function run_from_buffer(b){{
-        //     m=new DataView(b.buffer,b.byteOffset,b.byteLength);
-        //     d=b.length-{};
-        //     if(!c){{
-        //         c=new TextDecoder('utf-8',{{fatal: true}})
-        //     }}
-        //     run();
-        // }}
 
         let op_mask = with_n_1_bits(op_size);
 
