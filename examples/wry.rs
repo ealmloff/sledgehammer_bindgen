@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::{
     cell::Cell,
     time::{Duration, Instant},
@@ -720,7 +721,10 @@ fn main() -> wry::Result<()> {
                 channel1.append_child(node1, node2);
                 let rand1 = rand::random::<u8>();
                 let rand2 = rand::random::<u8>();
-                channel1.set_text(node2, format_args!("{}+{}={}", rand1, rand2, rand1 as usize + rand2 as usize));
+                channel1.set_text(
+                    node2,
+                    format_args!("{}+{}={}", rand1, rand2, rand1 as usize + rand2 as usize),
+                );
                 channel1.append_child(main, node1);
             }
 

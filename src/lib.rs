@@ -362,7 +362,6 @@ impl Bindings {
     fn as_tokens(&mut self) -> TokenStream2 {
         let all_js = self.js();
         let channel = self.channel();
-        
 
         let web_entrypoint = {
             #[cfg(feature = "web")]
@@ -370,7 +369,7 @@ impl Bindings {
                 let foreign_items = &self.foreign_items;
 
                 let ty = &self.buffer;
-                quote!{
+                quote! {
                     #[wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
                     extern "C" {
                         fn create(metadata_ptr: u32);
