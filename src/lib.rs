@@ -56,6 +56,8 @@ use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
+use syn::parse::ParseStream;
+use syn::punctuated::Punctuated;
 use std::collections::HashSet;
 use std::ops::Deref;
 use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit};
@@ -147,13 +149,38 @@ mod types;
 /// assert_eq!(get(0), "hello");
 /// ```
 #[proc_macro_attribute]
-pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
+pub fn bindgen(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args as Args);
+
     let mut input = parse_macro_input!(input as Bindings);
+    input.args = args;
 
     input.as_tokens().into()
 }
 
+struct Args {
+    module: bool
+}
+
+impl Parse for Args {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let arguments: Punctuated<Ident, syn::Token![,]> = Punctuated::parse_terminated(input)?;
+        let mut module = false;
+        for arg in arguments {
+            match arg.to_string().as_str() {
+                "module" => module = true,
+                _ => panic!("unknown argument"),
+            }
+        }
+
+        Ok(Args {
+            module
+        })
+    }
+}
+
 struct Bindings {
+    args: Args,
     buffer: Ident,
     functions: Vec<FunctionBinding>,
     foreign_items: Vec<ForeignItemFn>,
@@ -229,6 +256,9 @@ impl Parse for Bindings {
         let msg_moved_flag = builder.flag();
 
         Ok(Bindings {
+            args: Args {
+                module: false
+            },
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
             foreign_items,
@@ -324,17 +354,23 @@ impl Bindings {
             )
         };
 
-        format!(
+        let maybe_export = if self.args.module {
+            "export "
+        } else {
+            ""
+        };
+
+        let js = format!(
             r#"let m,p,ls,d,t,op,i,e,z,metaflags;
             {initialize}
             {declarations}
-            export function create(r){{
+            {maybe_export} function create(r){{
                 d=r;
             }}
-            export function update_memory(b){{
+            {maybe_export} function update_memory(b){{
                 m=new DataView(b.buffer)
             }}
-            export function run(){{
+            {maybe_export} function run(){{
                 {pre_run_metadata}
                 if({msg_ptr_moved}){{
                     ls={read_msg_ptr};
@@ -353,12 +389,14 @@ impl Bindings {
                     }}
                 }}
             }}
-            export function run_from_bytes(bytes){{
+            {maybe_export} function run_from_bytes(bytes){{
                 d = 0;
                 update_memory(new Uint8Array(bytes))
                 run()
             }}"#,
-        )
+        );
+
+        js
     }
 
     fn as_tokens(&mut self) -> TokenStream2 {
