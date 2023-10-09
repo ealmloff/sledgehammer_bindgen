@@ -713,7 +713,7 @@ fn main() -> wry::Result<()> {
             let main = 0;
             let node1 = 1;
             let node2 = 2;
-            for _ in 0..2 {
+            for _ in 0..rand::random::<u8>() {
                 channel1.create_element(node1, Element::div as u8);
                 channel1.create_element(node2, Element::span as u8);
                 channel1.append_child(node1, node2);
@@ -733,7 +733,7 @@ fn main() -> wry::Result<()> {
             channel1.reset();
 
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(Duration::from_millis(100));
                 responder.respond(Response::new(data));
             });
         })

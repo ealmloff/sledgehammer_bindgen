@@ -13,7 +13,6 @@ use syn::{
 };
 
 use crate::{
-    builder::BindingBuilder,
     encoder::{Encode, EncodeTraitObject, Encoders},
     types::numbers,
 };
@@ -34,7 +33,7 @@ struct TypeEncoding {
 }
 
 impl TypeEncoding {
-    fn new(ident: &Ident, ty: Type, encoder: &mut EncodeTraitObject) -> Self {
+    fn new(ident: &Ident, ty: Type, encoder: &EncodeTraitObject) -> Self {
         Self {
             ty,
             ident: ident.clone(),
@@ -45,7 +44,7 @@ impl TypeEncoding {
 }
 
 impl FunctionBinding {
-    pub fn new(encoders: &mut Encoders, builder: &mut BindingBuilder, function: ItemFn) -> Self {
+    pub fn new(encoders: &mut Encoders, function: ItemFn) -> Self {
         let name = function.sig.ident;
         let mut myself = Self {
             name,
@@ -64,7 +63,7 @@ impl FunctionBinding {
                     } else {
                         panic!("only simple idents are supported")
                     };
-                    myself.add(encoders, builder, ident, ty.ty.deref().clone())
+                    myself.add(encoders, ident, ty.ty.deref().clone())
                 }
             }
         }
@@ -150,42 +149,30 @@ impl FunctionBinding {
         }
     }
 
-    fn add(
-        &mut self,
-        encoders: &mut Encoders,
-        builder: &mut BindingBuilder,
-        ident: &Ident,
-        ty: Type,
-    ) {
+    fn add(&mut self, encoders: &mut Encoders, ident: &Ident, ty: Type) {
         if let Type::Path(segments) = &ty {
             let segments: Vec<_> = segments.path.segments.iter().collect();
             if let &[simple] = segments.as_slice() {
                 let as_str = simple.ident.to_string();
                 let encoder = match as_str.as_str() {
-                    "u8" => {
-                        encoders.get_or_insert_with(numbers::NumberEncoderFactory::<1>, builder)
-                    }
-                    "u16" => {
-                        encoders.get_or_insert_with(numbers::NumberEncoderFactory::<2>, builder)
-                    }
-                    "u32" => {
-                        encoders.get_or_insert_with(numbers::NumberEncoderFactory::<4>, builder)
-                    }
+                    "u8" => encoders.get_or_insert_with(numbers::NumberEncoderFactory::<1>),
+                    "u16" => encoders.get_or_insert_with(numbers::NumberEncoderFactory::<2>),
+                    "u32" => encoders.get_or_insert_with(numbers::NumberEncoderFactory::<4>),
                     _ => panic!("unsupported type"),
                 };
 
-                let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                let type_encoding = TypeEncoding::new(ident, ty, &encoder);
                 self.type_encodings.push(type_encoding);
                 return;
             }
         } else if let Type::Reference(ty_ref) = &ty {
-            let static_str = ty_ref
+            let static_lifetime = ty_ref
                 .lifetime
                 .as_ref()
                 .filter(|l| l.ident == "static")
                 .is_some();
             if let Type::Path(segments) = &*ty_ref.elem {
-                let ty = if static_str {
+                let ty = if static_lifetime {
                     parse_quote!(&'static str)
                 } else {
                     parse_quote!(&str)
@@ -210,63 +197,48 @@ impl FunctionBinding {
                                     }
                                     let encoder = match simple.ident.to_string().as_str() {
                                         "u8" => {
-                                            encoders.insert(NumberEncoderFactory::<1>, builder);
-                                            encoders.get_or_insert_with(
-                                                StrEncoderFactory::<1> {
-                                                    cache_name: cache,
-                                                    static_str,
-                                                },
-                                                builder,
-                                            )
+                                            encoders.insert(NumberEncoderFactory::<1>);
+                                            encoders.get_or_insert_with(StrEncoderFactory::<1> {
+                                                cache_name: cache,
+                                                static_str: static_lifetime,
+                                            })
                                         }
                                         "u16" => {
-                                            encoders.insert(NumberEncoderFactory::<2>, builder);
-                                            encoders.get_or_insert_with(
-                                                StrEncoderFactory::<2> {
-                                                    cache_name: cache,
-                                                    static_str,
-                                                },
-                                                builder,
-                                            )
+                                            encoders.insert(NumberEncoderFactory::<2>);
+                                            encoders.get_or_insert_with(StrEncoderFactory::<2> {
+                                                cache_name: cache,
+                                                static_str: static_lifetime,
+                                            })
                                         }
                                         "u32" => {
-                                            encoders.insert(NumberEncoderFactory::<4>, builder);
-                                            encoders.get_or_insert_with(
-                                                StrEncoderFactory::<4> {
-                                                    cache_name: cache,
-                                                    static_str,
-                                                },
-                                                builder,
-                                            )
+                                            encoders.insert(NumberEncoderFactory::<4>);
+                                            encoders.get_or_insert_with(StrEncoderFactory::<4> {
+                                                cache_name: cache,
+                                                static_str: static_lifetime,
+                                            })
                                         }
                                         _ => panic!("unsupported type"),
                                     };
 
-                                    let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                                    let type_encoding = TypeEncoding::new(ident, ty, &encoder);
                                     self.type_encodings.push(type_encoding);
                                     return;
                                 }
                             }
                         }
-                        encoders.insert(NumberEncoderFactory::<4>, builder);
-                        let encoder = encoders.get_or_insert_with(
-                            StrEncoderFactory::<4> {
-                                cache_name: cache,
-                                static_str,
-                            },
-                            builder,
-                        );
+                        encoders.insert(NumberEncoderFactory::<4>);
+                        let encoder = encoders.get_or_insert_with(StrEncoderFactory::<4> {
+                            cache_name: cache,
+                            static_str: static_lifetime,
+                        });
 
-                        let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                        let type_encoding = TypeEncoding::new(ident, ty, &encoder);
                         self.type_encodings.push(type_encoding);
                         return;
                     }
                 }
             }
             if let Type::Slice(slice) = &*ty_ref.elem {
-                if !static_str {
-                    return;
-                }
                 if let Type::Path(segments) = &*slice.elem {
                     let segments: Vec<_> = segments.path.segments.iter().collect();
                     if let &[simple] = segments.as_slice() {
@@ -279,80 +251,125 @@ impl FunctionBinding {
                                     let encoder = match simple.ident.to_string().as_str() {
                                         "u8" => match as_str.as_str() {
                                             "u8" => {
-                                                encoders.insert(NumberEncoderFactory::<1>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<1, 1>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<1>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<1, 1, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<1, 1, false>,
+                                                    )
+                                                }
                                             }
                                             "u16" => {
-                                                encoders.insert(NumberEncoderFactory::<2>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<2, 1>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<2>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<2, 1, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<2, 1, false>,
+                                                    )
+                                                }
                                             }
                                             "u32" => {
-                                                encoders.insert(NumberEncoderFactory::<4>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<4, 1>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<4>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<4, 1, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<4, 1, false>,
+                                                    )
+                                                }
                                             }
                                             _ => panic!("unsupported type"),
                                         },
                                         "u16" => match as_str.as_str() {
                                             "u8" => {
-                                                encoders.insert(NumberEncoderFactory::<1>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<1, 2>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<1>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<1, 2, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<1, 2, false>,
+                                                    )
+                                                }
                                             }
                                             "u16" => {
-                                                encoders.insert(NumberEncoderFactory::<2>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<2, 2>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<2>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<2, 2, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<2, 2, false>,
+                                                    )
+                                                }
                                             }
                                             "u32" => {
-                                                encoders.insert(NumberEncoderFactory::<4>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<4, 2>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<4>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<4, 2, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<4, 2, false>,
+                                                    )
+                                                }
                                             }
                                             _ => panic!("unsupported type"),
                                         },
                                         "u32" => match as_str.as_str() {
                                             "u8" => {
-                                                encoders.insert(NumberEncoderFactory::<1>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<1, 4>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<1>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<1, 4, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<1, 4, false>,
+                                                    )
+                                                }
                                             }
                                             "u16" => {
-                                                encoders.insert(NumberEncoderFactory::<2>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<2, 4>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<2>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<2, 4, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<2, 4, false>,
+                                                    )
+                                                }
                                             }
                                             "u32" => {
-                                                encoders.insert(NumberEncoderFactory::<4>, builder);
-                                                encoders.get_or_insert_with(
-                                                    SliceFactory::<4, 4>,
-                                                    builder,
-                                                )
+                                                encoders.insert(NumberEncoderFactory::<4>);
+                                                if static_lifetime {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<4, 4, true>,
+                                                    )
+                                                } else {
+                                                    encoders.get_or_insert_with(
+                                                        SliceFactory::<4, 4, false>,
+                                                    )
+                                                }
                                             }
                                             _ => panic!("unsupported type"),
                                         },
                                         _ => panic!("unsupported type"),
                                     };
 
-                                    let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                                    let type_encoding = TypeEncoding::new(ident, ty, &encoder);
                                     self.type_encodings.push(type_encoding);
                                     return;
                                 }
@@ -360,20 +377,32 @@ impl FunctionBinding {
                         } else {
                             let encoder = match as_str.as_str() {
                                 "u8" => {
-                                    encoders.insert(NumberEncoderFactory::<1>, builder);
-                                    encoders.get_or_insert_with(SliceFactory::<1, 4>, builder)
+                                    encoders.insert(NumberEncoderFactory::<1>);
+                                    if static_lifetime {
+                                        encoders.get_or_insert_with(SliceFactory::<1, 4, true>)
+                                    } else {
+                                        encoders.get_or_insert_with(SliceFactory::<1, 4, false>)
+                                    }
                                 }
                                 "u16" => {
-                                    encoders.insert(NumberEncoderFactory::<2>, builder);
-                                    encoders.get_or_insert_with(SliceFactory::<2, 4>, builder)
+                                    encoders.insert(NumberEncoderFactory::<2>);
+                                    if static_lifetime {
+                                        encoders.get_or_insert_with(SliceFactory::<2, 4, true>)
+                                    } else {
+                                        encoders.get_or_insert_with(SliceFactory::<2, 4, false>)
+                                    }
                                 }
                                 "u32" => {
-                                    encoders.insert(NumberEncoderFactory::<4>, builder);
-                                    encoders.get_or_insert_with(SliceFactory::<4, 4>, builder)
+                                    encoders.insert(NumberEncoderFactory::<4>);
+                                    if static_lifetime {
+                                        encoders.get_or_insert_with(SliceFactory::<4, 4, true>)
+                                    } else {
+                                        encoders.get_or_insert_with(SliceFactory::<4, 4, false>)
+                                    }
                                 }
                                 _ => panic!("unsupported type"),
                             };
-                            let type_encoding = TypeEncoding::new(ident, ty, encoder);
+                            let type_encoding = TypeEncoding::new(ident, ty, &encoder);
                             self.type_encodings.push(type_encoding);
                             return;
                         }
@@ -391,7 +420,7 @@ impl FunctionBinding {
                             if let &[GenericArgument::Type(Type::Path(t))] = generics.as_slice() {
                                 let segments: Vec<_> = t.path.segments.iter().collect();
                                 if let &[simple] = segments.as_slice() {
-                                    encoders.insert(GeneralStringFactory, builder);
+                                    encoders.insert(GeneralStringFactory);
                                     match simple {
                                         PathSegment {
                                             ident: as_string,
@@ -399,27 +428,21 @@ impl FunctionBinding {
                                         } => {
                                             let encoder = match as_string.to_string().as_str() {
                                                 "u8" => {
-                                                    encoders
-                                                        .insert(NumberEncoderFactory::<1>, builder);
+                                                    encoders.insert(NumberEncoderFactory::<1>);
                                                     encoders.get_or_insert_with(
                                                         WritableEncoderFactory::<1>,
-                                                        builder,
                                                     )
                                                 }
                                                 "u16" => {
-                                                    encoders
-                                                        .insert(NumberEncoderFactory::<2>, builder);
+                                                    encoders.insert(NumberEncoderFactory::<2>);
                                                     encoders.get_or_insert_with(
                                                         WritableEncoderFactory::<2>,
-                                                        builder,
                                                     )
                                                 }
                                                 "u32" => {
-                                                    encoders
-                                                        .insert(NumberEncoderFactory::<4>, builder);
+                                                    encoders.insert(NumberEncoderFactory::<4>);
                                                     encoders.get_or_insert_with(
                                                         WritableEncoderFactory::<4>,
-                                                        builder,
                                                     )
                                                 }
                                                 _ => panic!("unsupported type"),
@@ -427,7 +450,7 @@ impl FunctionBinding {
                                             let type_encoding = TypeEncoding::new(
                                                 ident,
                                                 parse_quote!(impl sledgehammer_utils::Writable),
-                                                encoder,
+                                                &encoder,
                                             );
                                             self.type_encodings.push(type_encoding);
                                             return;
@@ -437,14 +460,13 @@ impl FunctionBinding {
                                 }
                             }
                         } else {
-                            encoders.insert(GeneralStringFactory, builder);
-                            encoders.insert(NumberEncoderFactory::<4>, builder);
-                            let encoder =
-                                encoders.get_or_insert_with(WritableEncoderFactory::<4>, builder);
+                            encoders.insert(GeneralStringFactory);
+                            encoders.insert(NumberEncoderFactory::<4>);
+                            let encoder = encoders.get_or_insert_with(WritableEncoderFactory::<4>);
                             let type_encoding = TypeEncoding::new(
                                 ident,
                                 parse_quote!(impl sledgehammer_utils::Writable),
-                                encoder,
+                                &encoder,
                             );
                             self.type_encodings.push(type_encoding);
                             return;

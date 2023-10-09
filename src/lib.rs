@@ -50,16 +50,16 @@
 //!  
 //!  - See this benchmark: <https://jsbench.me/csl9lfauwi/2>
 use crate::encoder::Encoder;
-use builder::{BindingBuilder, RustJSFlag, RustJSU32};
+use builder::{RustJSFlag, RustJSU32};
 use encoder::Encoders;
 use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::parse::ParseStream;
-use syn::punctuated::Punctuated;
 use std::collections::HashSet;
 use std::ops::Deref;
+use syn::parse::ParseStream;
+use syn::punctuated::Punctuated;
 use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit};
 use syn::{parse_quote, ForeignItemFn};
 use types::string::GeneralStringFactory;
@@ -159,7 +159,7 @@ pub fn bindgen(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 struct Args {
-    module: bool
+    module: bool,
 }
 
 impl Parse for Args {
@@ -173,9 +173,7 @@ impl Parse for Args {
             }
         }
 
-        Ok(Args {
-            module
-        })
+        Ok(Args { module })
     }
 }
 
@@ -185,7 +183,6 @@ struct Bindings {
     functions: Vec<FunctionBinding>,
     foreign_items: Vec<ForeignItemFn>,
     initialize: String,
-    builder: BindingBuilder,
     encoders: Encoders,
     msg_ptr_u32: RustJSU32,
     msg_moved_flag: RustJSFlag,
@@ -200,8 +197,7 @@ impl Parse for Bindings {
         let mut foreign_items = Vec::new();
         let mut initialize = String::new();
         let mut encoders = Encoders::default();
-        let mut builder = BindingBuilder::default();
-        encoders.insert(GeneralStringFactory, &mut builder);
+        encoders.insert(GeneralStringFactory);
         for item in extren_block.content.unwrap().1 {
             match item {
                 syn::Item::Const(cnst) => {
@@ -231,7 +227,7 @@ impl Parse for Bindings {
                     }
                 }
                 syn::Item::Fn(f) => {
-                    let f = FunctionBinding::new(&mut encoders, &mut builder, f);
+                    let f = FunctionBinding::new(&mut encoders, f);
                     functions.push(f);
                 }
                 syn::Item::ForeignMod(m) => {
@@ -252,18 +248,15 @@ impl Parse for Bindings {
             initialize += &encoder.global_js();
         }
 
-        let msg_ptr_u32 = builder.u32();
-        let msg_moved_flag = builder.flag();
+        let msg_ptr_u32 = encoders.builder().u32();
+        let msg_moved_flag = encoders.builder().flag();
 
         Ok(Bindings {
-            args: Args {
-                module: false
-            },
+            args: Args { module: false },
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
             foreign_items,
             initialize,
-            builder,
             encoders,
             msg_ptr_u32,
             msg_moved_flag,
@@ -337,7 +330,7 @@ impl Bindings {
         let msg_ptr_moved = self.msg_moved_flag.read_js();
         let read_msg_ptr = self.msg_ptr_u32.read_js();
 
-        let pre_run_metadata = self.builder.pre_run_js();
+        let pre_run_metadata = self.encoders.builder().pre_run_js();
 
         let all_variables: HashSet<&str> = self
             .functions
@@ -354,11 +347,7 @@ impl Bindings {
             )
         };
 
-        let maybe_export = if self.args.module {
-            "export "
-        } else {
-            ""
-        };
+        let maybe_export = if self.args.module { "export " } else { "" };
 
         let js = format!(
             r#"let m,p,ls,d,t,op,i,e,z,metaflags;
@@ -542,14 +531,19 @@ impl Bindings {
                 let merge = e.merge_memory_rust();
                 quote! {
                     #comment
-                    #merge
+                    {
+                        let memory: Vec<_> = #merge.collect();
+                        let len = memory.len();
+                        let iter = memory.into_iter();
+                        iter
+                    }
                 }
             })
             .collect::<Vec<_>>();
 
-        let meta_type = self.builder.rust_type();
-        let meta_ident = self.builder.rust_ident();
-        let meta_init = self.builder.rust_init();
+        let meta_type = self.encoders.builder.rust_type();
+        let meta_ident = self.encoders.builder.rust_ident();
+        let meta_init = self.encoders.builder.rust_init();
 
         let set_msg_ptr = self
             .msg_ptr_u32

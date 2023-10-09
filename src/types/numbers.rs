@@ -13,15 +13,6 @@ pub struct NumberEncoder<const S: u32> {
 }
 
 impl<const S: u32> NumberEncoder<S> {
-    pub fn new(builder: &mut crate::builder::BindingBuilder) -> Self {
-        let array_moved_flag = builder.flag();
-        let array_ptr = builder.u32();
-        Self {
-            array_moved_flag,
-            array_ptr,
-        }
-    }
-
     pub fn size(&self) -> u32 {
         match S {
             1 => 8,
@@ -46,7 +37,8 @@ pub struct NumberEncoderFactory<const S: u32>;
 impl<const S: u32> CreateEncoder for NumberEncoderFactory<S> {
     type Output = NumberEncoder<S>;
 
-    fn create(&self, builder: &mut crate::builder::BindingBuilder) -> Self::Output {
+    fn create(&self, encoders: &mut Encoders) -> Self::Output {
+        let builder = encoders.builder();
         let array_moved_flag = builder.flag();
         let array_ptr = builder.u32();
         NumberEncoder {
@@ -140,7 +132,7 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
         quote! {
             // align the array pointer so that it is a multiple of N
             {
-                let buffer_size = current_ptr % #S;
+                let buffer_size = (#S - current_ptr % #S);
                 let zeroed_buffer = std::iter::repeat(0u8).take(buffer_size as usize);
                 current_ptr += buffer_size;
                 #write_ptr
@@ -148,6 +140,13 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
                 zeroed_buffer.chain(self.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()))
             }
         }
+    }
+}
+
+impl<const S: u32> NumberEncoder<S> {
+    pub(crate) fn js_ident(&self) -> String {
+        let size = self.size();
+        format!("u{size}buf")
     }
 }
 

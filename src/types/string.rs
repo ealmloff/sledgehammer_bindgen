@@ -3,9 +3,9 @@ use quote::quote;
 use syn::{parse_quote, Ident, Type};
 
 use crate::builder::{RustJSFlag, RustJSU32};
-use crate::encoder::{CreateEncoder, Encode, Encoder};
+use crate::encoder::{CreateEncoder, Encode, Encoder, Encoders, EncodeTraitObject};
 
-use super::numbers::NumberEncoder;
+use super::numbers::{NumberEncoder, NumberEncoderFactory};
 
 pub struct GeneralStringFactory;
 
@@ -20,7 +20,8 @@ pub struct GeneralString {
 impl CreateEncoder for GeneralStringFactory {
     type Output = GeneralString;
 
-    fn create(&self, builder: &mut crate::builder::BindingBuilder) -> GeneralString {
+    fn create(&self, encoder: &mut Encoders) -> GeneralString {
+        let builder = encoder.builder();
         let str_moved_flag = builder.flag();
         let str_tiny_flag = builder.flag();
         let str_used_flag = builder.flag();
@@ -157,9 +158,15 @@ impl Encoder for GeneralString {
 }
 
 pub struct StrEncoder<const S: u32> {
-    size_type: NumberEncoder<S>,
-    cache_name: Option<(Ident, NumberEncoder<1>)>,
+    size_type: EncodeTraitObject,
+    cache_name: Option<(Ident, EncodeTraitObject)>,
     static_str: bool,
+}
+
+impl<const S: u32> StrEncoder<S> {
+    fn size_type(&self) -> &NumberEncoder<S> {
+        self.size_type.downcast()
+    }
 }
 
 pub struct StrEncoderFactory<const S: u32> {
@@ -170,13 +177,13 @@ pub struct StrEncoderFactory<const S: u32> {
 impl<const S: u32> CreateEncoder for StrEncoderFactory<S> {
     type Output = StrEncoder<S>;
 
-    fn create(&self, builder: &mut crate::builder::BindingBuilder) -> Self::Output {
+    fn create(&self, encoder: &mut Encoders) -> Self::Output {
         StrEncoder {
-            size_type: NumberEncoder::new(builder),
+            size_type: encoder.get_or_insert_with(NumberEncoderFactory::<S>),
             cache_name: self
                 .cache_name
                 .clone()
-                .map(|name| (name, NumberEncoder::new(builder))),
+                .map(|name| (name, encoder.get_or_insert_with(NumberEncoderFactory::<1>))),
             static_str: self.static_str,
         }
     }
@@ -255,7 +262,7 @@ impl<const S: u32> Encode for StrEncoder<S> {
         let len = Ident::new("len", Span::call_site());
         let char_len = Ident::new("char_len", Span::call_site());
         let write_len = self.size_type.encode_rust(&char_len);
-        let char_len_type = self.size_type.element_type();
+        let char_len_type = self.size_type().element_type();
         let encode = quote! {
             let #len = #name.len();
             let #char_len: usize = #name.chars().map(|c| c.len_utf16()).sum();

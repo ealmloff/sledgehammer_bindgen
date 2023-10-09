@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, ops::Deref};
+use std::{any::Any, collections::HashMap, ops::Deref, rc::Rc};
 
 use quote::{__private::TokenStream as TokenStream2, quote};
 use syn::{Ident, Type};
@@ -8,7 +8,7 @@ use crate::builder::BindingBuilder;
 pub trait CreateEncoder {
     type Output;
 
-    fn create(&self, builder: &mut BindingBuilder) -> Self::Output;
+    fn create(&self, encoder: &mut Encoders) -> Self::Output;
 
     fn rust_ident(&self) -> Ident;
 }
@@ -63,7 +63,25 @@ pub trait DynEncode: Any + Encode + Encoder {}
 
 impl<T: Any + Encode + Encoder> DynEncode for T {}
 
-pub struct EncodeTraitObject(Box<dyn DynEncode>);
+pub trait AnyDynEncode: DynEncode {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: DynEncode> AnyDynEncode for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[derive(Clone)]
+pub struct EncodeTraitObject(Rc<dyn AnyDynEncode>);
+
+impl EncodeTraitObject {
+    pub fn downcast<T: AnyDynEncode>(&self) -> &T {
+        let rc_any = &*self.0;
+        rc_any.as_any().downcast_ref::<T>().unwrap()
+    }
+}
 
 impl Encoder for EncodeTraitObject {
     fn global_js(&self) -> String {
@@ -120,6 +138,7 @@ impl Encode for EncodeTraitObject {
 #[derive(Default)]
 pub struct Encoders {
     encoders: HashMap<Ident, EncodeTraitObject>,
+    pub(crate) builder: BindingBuilder,
 }
 
 impl Deref for Encoders {
@@ -131,22 +150,27 @@ impl Deref for Encoders {
 }
 
 impl Encoders {
-    pub fn insert<T: CreateEncoder<Output = O>, O: DynEncode>(
-        &mut self,
-        factory: T,
-        builder: &mut BindingBuilder,
-    ) {
-        self.get_or_insert_with(factory, builder);
+    pub fn insert<T: CreateEncoder<Output = O>, O: AnyDynEncode>(&mut self, factory: T) {
+        self.get_or_insert_with(factory);
     }
 
-    pub fn get_or_insert_with<T: CreateEncoder<Output = O>, O: DynEncode>(
+    pub fn get_or_insert_with<T: CreateEncoder<Output = O>, O: AnyDynEncode>(
         &mut self,
         factory: T,
-        builder: &mut BindingBuilder,
-    ) -> &mut EncodeTraitObject {
+    ) -> EncodeTraitObject {
         let id = factory.rust_ident();
-        self.encoders
-            .entry(id)
-            .or_insert_with(|| EncodeTraitObject(Box::new(factory.create(builder))))
+        let value = self.encoders.get(&id);
+        match value {
+            Some(value) => value.clone(),
+            None => {
+                let value = EncodeTraitObject(Rc::new(factory.create(self)));
+                self.encoders.insert(id.clone(), value.clone());
+                value
+            }
+        }
+    }
+
+    pub fn builder(&mut self) -> &mut BindingBuilder {
+        &mut self.builder
     }
 }
