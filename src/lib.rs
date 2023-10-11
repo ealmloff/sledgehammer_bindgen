@@ -56,6 +56,7 @@ use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
+use syn::spanned::Spanned;
 use std::collections::HashSet;
 use std::ops::Deref;
 use syn::parse::ParseStream;
@@ -223,7 +224,12 @@ impl Parse for Bindings {
                         } else {
                             panic!("missing body")
                         };
-                        initialize += &std::fs::read_to_string(path).unwrap();
+                        initialize += &std::fs::read_to_string(&path).map_err(|e| {
+                            syn::Error::new(
+                                cnst.span(),
+                                format!("failed to read file {} (from dir {}): {}", path, std::env::current_dir().unwrap().display(), e),
+                            )
+                        })?;
                     }
                 }
                 syn::Item::Fn(f) => {
