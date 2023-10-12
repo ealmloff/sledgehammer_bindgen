@@ -13,6 +13,11 @@ pub struct NumberEncoder<const S: u32> {
 }
 
 impl<const S: u32> NumberEncoder<S> {
+    pub fn pointer_js(&self) -> String {
+        let size = self.size();
+        format!("u{size}bufp")
+    }
+
     pub fn size(&self) -> u32 {
         match S {
             1 => 8,
@@ -68,12 +73,13 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
         let ptr = self.array_ptr.read_js();
         let size = self.size();
         let size_in_bytes = size / 8;
+        let pointer = self.pointer_js();
         format!(
             "if ({moved}){{
                 t = {ptr};
                 u{size}buf=new Uint{size}Array(m.buffer,t,((m.buffer.byteLength-t)-(m.buffer.byteLength-t)%{size_in_bytes})/{size_in_bytes});
             }}
-            u{size}bufp=0;"
+            {pointer}=0;"
         )
     }
 
@@ -153,7 +159,8 @@ impl<const S: u32> NumberEncoder<S> {
 impl<const S: u32> Encode for NumberEncoder<S> {
     fn encode_js(&self) -> String {
         let size = self.size();
-        format!("u{size}buf[u{size}bufp++]")
+        let pointer = self.pointer_js();
+        format!("u{size}buf[{pointer}++]")
     }
 
     fn encode_rust(&self, ident: &Ident) -> TokenStream2 {

@@ -56,11 +56,11 @@ use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::spanned::Spanned;
 use std::collections::HashSet;
 use std::ops::Deref;
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit};
 use syn::{parse_quote, ForeignItemFn};
 use types::string::GeneralStringFactory;
@@ -227,7 +227,12 @@ impl Parse for Bindings {
                         initialize += &std::fs::read_to_string(&path).map_err(|e| {
                             syn::Error::new(
                                 cnst.span(),
-                                format!("failed to read file {} (from dir {}): {}", path, std::env::current_dir().unwrap().display(), e),
+                                format!(
+                                    "failed to read file {} (from dir {}): {}",
+                                    path,
+                                    std::env::current_dir().unwrap().display(),
+                                    e
+                                ),
                             )
                         })?;
                     }

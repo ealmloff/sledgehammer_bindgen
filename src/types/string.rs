@@ -3,9 +3,11 @@ use quote::quote;
 use syn::{parse_quote, Ident, Type};
 
 use crate::builder::{RustJSFlag, RustJSU32};
-use crate::encoder::{CreateEncoder, Encode, Encoder, Encoders, EncodeTraitObject};
+use crate::encoder::{CreateEncoder, Encode, EncodeTraitObject, Encoder, Encoders};
 
 use super::numbers::{NumberEncoder, NumberEncoderFactory};
+
+const CACHE_MISS_BIT: u32 = 1 << 7;
 
 pub struct GeneralStringFactory;
 
@@ -226,21 +228,21 @@ impl<const S: u32> Encoder for StrEncoder<S> {
         match &self.cache_name {
             Some((cache, encoder)) => {
                 let get_u8 = encoder.encode_js();
-                let last_bit_mask: u32 = 1 << 7;
-                let cache_idx_mask = !last_bit_mask;
+
+                let cache_idx_mask = !CACHE_MISS_BIT;
                 let read_string_length = self.size_type.encode_js();
                 format!(
                     "const {cache} = [];
-                    let {cache}_tmp1, {cache}_tmp2;
+                    let {cache}_cache_hit, {cache}_cache_idx;
                     function get_{cache}() {{
-                        {cache}_tmp2 = {get_u8};
-                        if({cache}_tmp2 & {last_bit_mask}){{
-                            {cache}_tmp1=s.substring(sp,sp+={read_string_length});
-                            {cache}[{cache}_tmp2&{cache_idx_mask}]={cache}_tmp1;
-                            return {cache}_tmp1;
+                        {cache}_cache_idx = {get_u8};
+                        if({cache}_cache_idx & {CACHE_MISS_BIT}){{
+                            {cache}_cache_hit=s.substring(sp,sp+={read_string_length});
+                            {cache}[{cache}_cache_idx&{cache_idx_mask}]={cache}_cache_hit;
+                            return {cache}_cache_hit;
                         }}
                         else{{
-                            return {cache}[{cache}_tmp2&{cache_idx_mask}];
+                            return {cache}[{cache}_cache_idx&{cache_idx_mask}];
                         }}
                     }}",
                 )
@@ -285,7 +287,7 @@ impl<const S: u32> Encode for StrEncoder<S> {
                     quote! {
                         let (_id, _new) = self.#cache.push(#name);
                         if _new {
-                            let cache_id = 128 | _id;
+                            let cache_id = #CACHE_MISS_BIT as u8 | _id;
                             #write_size
                             #encode
                         }
@@ -299,11 +301,12 @@ impl<const S: u32> Encode for StrEncoder<S> {
                     quote! {
                         if let Some(&id) = self.#cache.get(#name){
                             let cache_id = id;
+                            println!("cache hit {:b} -> {}", cache_id, #name);
                             #write_size
                         }
                         else {
                             let cache_len = self.#cache.len() as u8;
-                            let id = if cache_len == 128 {
+                            let id = if cache_len == #CACHE_MISS_BIT as u8 {
                                 if let Some((_, id)) = self.#cache.pop_lru() {
                                     self.#cache.put(#name.to_string(), id);
                                     id
@@ -315,7 +318,8 @@ impl<const S: u32> Encode for StrEncoder<S> {
                                 self.#cache.put(#name.to_string(), cache_len);
                                 cache_len
                             };
-                            let cache_id =  128 | id;
+                            let cache_id =  #CACHE_MISS_BIT as u8 | id;
+                            println!("cache miss {:b} -> {}", cache_id, #name);
                             #write_size
                             #encode
                         }

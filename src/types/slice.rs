@@ -63,10 +63,10 @@ impl<const N: u32, const S: u32, const STATIC: bool> Encode for Slice<N, S, STAT
                 _ => todo!(),
             }
         } else {
+            let array_ptr = self.array().pointer_js();
             let array_read = self.array().js_ident();
-            let ptr_name = "e";
-            let slice_end = format!("{ptr_name}+{len_read}");
-            format!("(()=>{{{ptr_name}={ptr_read};return {array_read}.slice({ptr_name},{slice_end});}})()")
+            let slice_end = format!("{array_ptr}+{len_read}");
+            format!("(()=>{{e={slice_end};const final_array = {array_read}.slice({array_ptr},e);{array_ptr}=e;return final_array;}})()")
         }
     }
 
@@ -84,21 +84,17 @@ impl<const N: u32, const S: u32, const STATIC: bool> Encode for Slice<N, S, STAT
                 }
             }
         });
-        let write_ptr = match STATIC{
-            true => quote!{
+        let write_ptr = match STATIC {
+            true => quote! {
                 let #ptr = #ident.as_ptr() as u32;
+                #encode_ptr
             },
             false => {
-                let array = self.array();
-                let array_ident = array.rust_ident();
-                quote!{
-                    let #ptr = self.#array_ident.len() as u32;
-                }
-            },
+                quote! {}
+            }
         };
         quote! {
             #write_ptr
-            #encode_ptr
             let #len = #ident.len() as u32;
             #encode_len
             #write_array
