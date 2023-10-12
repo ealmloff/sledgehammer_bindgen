@@ -301,7 +301,6 @@ impl<const S: u32> Encode for StrEncoder<S> {
                     quote! {
                         if let Some(&id) = self.#cache.get(#name){
                             let cache_id = id;
-                            println!("cache hit {:b} -> {}", cache_id, #name);
                             #write_size
                         }
                         else {
@@ -319,7 +318,6 @@ impl<const S: u32> Encode for StrEncoder<S> {
                                 cache_len
                             };
                             let cache_id =  #CACHE_MISS_BIT as u8 | id;
-                            println!("cache miss {:b} -> {}", cache_id, #name);
                             #write_size
                             #encode
                         }
