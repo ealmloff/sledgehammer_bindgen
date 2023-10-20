@@ -59,10 +59,10 @@ use quote::quote;
 use std::collections::HashSet;
 use std::ops::Deref;
 use syn::parse::ParseStream;
+use syn::parse_quote;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit};
-use syn::{parse_quote, ForeignItemFn};
 use types::string::GeneralStringFactory;
 
 mod builder;
@@ -182,7 +182,8 @@ struct Bindings {
     args: Args,
     buffer: Ident,
     functions: Vec<FunctionBinding>,
-    foreign_items: Vec<ForeignItemFn>,
+    #[cfg(feature = "web")]
+    foreign_items: Vec<syn::ForeignItemFn>,
     initialize: String,
     encoders: Encoders,
     msg_ptr_u32: RustJSU32,
@@ -195,6 +196,7 @@ impl Parse for Bindings {
 
         let mut buffer = None;
         let mut functions = Vec::new();
+        #[cfg(feature = "web")]
         let mut foreign_items = Vec::new();
         let mut initialize = String::new();
         let mut encoders = Encoders::default();
@@ -241,7 +243,10 @@ impl Parse for Bindings {
                     let f = FunctionBinding::new(&mut encoders, f);
                     functions.push(f);
                 }
-                syn::Item::ForeignMod(m) => {
+                #[allow(unused)]
+                syn::Item::ForeignMod(m) =>
+                {
+                    #[cfg(feature = "web")]
                     for item in m.items {
                         if let syn::ForeignItem::Fn(f) = item {
                             foreign_items.push(f)
@@ -266,6 +271,7 @@ impl Parse for Bindings {
             args: Args { module: false },
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
+            #[cfg(feature = "web")]
             foreign_items,
             initialize,
             encoders,
@@ -542,12 +548,7 @@ impl Bindings {
                 let merge = e.merge_memory_rust();
                 quote! {
                     #comment
-                    {
-                        let memory: Vec<_> = #merge.collect();
-                        let len = memory.len();
-                        let iter = memory.into_iter();
-                        iter
-                    }
+                    #merge
                 }
             })
             .collect::<Vec<_>>();
