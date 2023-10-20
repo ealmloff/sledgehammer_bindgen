@@ -142,7 +142,7 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
                 current_ptr += buffer_size;
             }
         });
-        let buffer_memory = quote! { elf.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()) };
+        let buffer_memory = quote! { self.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()) };
         let final_memory = if S != 1 {
             quote! {
                 zeroed_buffer.chain(#buffer_memory)
