@@ -4,6 +4,7 @@ use crate::types::{
     string::{GeneralStringFactory, StrEncoderFactory},
     writable::WritableEncoderFactory,
 };
+use std::fmt::Write;
 use std::ops::Deref;
 
 use quote::{__private::TokenStream as TokenStream2, quote};
@@ -112,10 +113,13 @@ impl FunctionBinding {
                 .map(|(k, _)| k.to_string())
                 .collect();
 
-            let unmatched_decodings: String = javascript_decodings
-                .into_iter()
-                .map(|(k, v)| format!("{}={};", k, v))
-                .collect();
+            let unmatched_decodings: String =
+                javascript_decodings
+                    .into_iter()
+                    .fold(String::new(), |mut state, (k, v)| {
+                        let _ = write!(state, "{}={};", k, v);
+                        state
+                    });
 
             myself.js_output = unmatched_decodings;
 

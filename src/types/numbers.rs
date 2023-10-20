@@ -135,18 +135,28 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
     fn merge_memory_rust(&self) -> TokenStream2 {
         let ident = self.rust_ident();
         let write_ptr = self.array_ptr.write_rust(parse_quote!(current_ptr));
-        let add_buffer = (S != 1).then(||quote!{
-            let buffer_size = (#S - current_ptr % #S);
-            let zeroed_buffer = std::iter::repeat(0u8).take(buffer_size as usize);
-            current_ptr += buffer_size;
+        let add_buffer = (S != 1).then(|| {
+            quote! {
+                let buffer_size = (#S - current_ptr % #S);
+                let zeroed_buffer = std::iter::repeat(0u8).take(buffer_size as usize);
+                current_ptr += buffer_size;
+            }
         });
+        let buffer_memory = quote! { elf.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()) };
+        let final_memory = if S != 1 {
+            quote! {
+                zeroed_buffer.chain(#buffer_memory)
+            }
+        } else {
+            buffer_memory
+        };
         quote! {
             // align the array pointer so that it is a multiple of N
             {
                 #add_buffer
                 #write_ptr
                 current_ptr += self.#ident.len() as u32 * #S;
-                zeroed_buffer.chain(self.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()))
+                #final_memory
             }
         }
     }
