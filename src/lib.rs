@@ -81,7 +81,7 @@ mod types;
 ///     // You can define a struct to hold the data for the batched calls.
 ///     struct Buffer;
 ///
-///     // JS is a special constatant that defines initialization javascript. It can be used to set up the js environment and define the code that wasm-bindgen binds to.
+///     // JS is a special constant that defines initialization javascript. It can be used to set up the js environment and define the code that wasm-bindgen binds to.
 ///     const JS: &str = r#"
 ///         const text = ["hello"];
 ///
@@ -226,13 +226,15 @@ impl Parse for Bindings {
                         } else {
                             panic!("missing body")
                         };
+                        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+                        let path = std::path::Path::new(&manifest_dir).join(path);
                         initialize += &std::fs::read_to_string(&path).map_err(|e| {
                             syn::Error::new(
                                 cnst.span(),
                                 format!(
                                     "failed to read file {} (from dir {}): {}",
-                                    path,
-                                    std::env::current_dir().unwrap().display(),
+                                    path.display(),
+                                    manifest_dir,
                                     e
                                 ),
                             )
