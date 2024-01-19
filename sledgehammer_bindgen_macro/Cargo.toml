@@ -1,5 +1,5 @@
 [package]
-name = "sledgehammer_bindgen"
+name = "sledgehammer_bindgen_macro"
 version = "0.3.1"
 authors = ["Evan Almloff <ealmlof1@stumail.jccc.edu>"]
 edition = "2021"
@@ -12,22 +12,16 @@ keywords = ["web", "wasm", "dom"]
 categories = ["web-programming", "wasm", "api-bindings"]
 
 [dependencies]
-sledgehammer_bindgen_macro = { path = "sledgehammer_bindgen_macro" }
-wasm-bindgen = { version = "*", optional = true }
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
 
-[dev-dependencies]
-rand = "0.8.5"
-sledgehammer_utils = "0.2.0"
-wasm-bindgen = "0.2"
-wry = { version = "0.33.0", features = ["devtools"] }
+[lib]
+proc-macro = true
 
 [dev-dependencies.web-sys]
 version = "0.3"
 features = ["Node", "console"]
 
 [features]
-default = ["web"]
-web = ["wasm-bindgen", "sledgehammer_bindgen_macro/web"]
-
-[workspace]
-members = ["sledgehammer_bindgen_macro"]
+default = []
+web = []
