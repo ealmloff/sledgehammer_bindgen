@@ -46,7 +46,10 @@ impl<const S: u32> Encoder for WritableEncoder<S> {
 
 impl<const S: u32> Encode for WritableEncoder<S> {
     fn encode_js(&self) -> String {
-        format!("s.substring(sp,sp+={})", self.size_type.encode_js())
+        format!(
+            "this.s.substring(this.sp,this.sp+={})",
+            self.size_type.encode_js()
+        )
     }
 
     fn encode_rust(&self, name: &Ident) -> TokenStream2 {

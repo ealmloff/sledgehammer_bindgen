@@ -58,9 +58,7 @@ use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use std::collections::HashSet;
 use std::ops::Deref;
-use syn::parse::ParseStream;
 use syn::parse_quote;
-use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit};
 use types::string::GeneralStringFactory;
@@ -150,41 +148,17 @@ mod types;
 /// assert_eq!(get(0), "hello");
 /// ```
 #[proc_macro_attribute]
-pub fn bindgen(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args as Args);
-
+pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as Bindings);
-    input.args = args;
 
     input.as_tokens().into()
 }
 
-struct Args {
-    module: bool,
-}
-
-impl Parse for Args {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let arguments: Punctuated<Ident, syn::Token![,]> = Punctuated::parse_terminated(input)?;
-        let mut module = false;
-        for arg in arguments {
-            match arg.to_string().as_str() {
-                "module" => module = true,
-                _ => panic!("unknown argument"),
-            }
-        }
-
-        Ok(Args { module })
-    }
-}
-
 struct Bindings {
-    args: Args,
     buffer: Ident,
     functions: Vec<FunctionBinding>,
-    #[cfg(feature = "web")]
-    foreign_items: Vec<syn::ForeignItemFn>,
     initialize: String,
+    custom_code: String,
     encoders: Encoders,
     msg_ptr_u32: RustJSU32,
     msg_moved_flag: RustJSFlag,
@@ -192,16 +166,15 @@ struct Bindings {
 
 impl Parse for Bindings {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let extren_block = syn::ItemMod::parse(input)?;
+        let extern_block = syn::ItemMod::parse(input)?;
 
         let mut buffer = None;
         let mut functions = Vec::new();
-        #[cfg(feature = "web")]
-        let mut foreign_items = Vec::new();
         let mut initialize = String::new();
+        let mut custom_code = String::new();
         let mut encoders = Encoders::default();
         encoders.insert(GeneralStringFactory);
-        for item in extren_block.content.unwrap().1 {
+        for item in extern_block.content.unwrap().1 {
             match item {
                 syn::Item::Const(cnst) => {
                     if cnst.ident == "JS" {
@@ -209,26 +182,32 @@ impl Parse for Bindings {
                             if let Lit::Str(s) = &lit.lit {
                                 s.value()
                             } else {
-                                panic!("missing body")
+                                return Err(syn::Error::new(
+                                    cnst.span(),
+                                    "expected string literal",
+                                ));
                             }
                         } else {
-                            panic!("missing body")
+                            return Err(syn::Error::new(cnst.span(), "expected string literal"));
                         };
-                        initialize += &body;
+                        custom_code += &body;
                     }
                     if cnst.ident == "JS_FILE" {
                         let path = if let Expr::Lit(lit) = cnst.expr.deref() {
                             if let Lit::Str(s) = &lit.lit {
                                 s.value()
                             } else {
-                                panic!("missing body")
+                                return Err(syn::Error::new(
+                                    cnst.span(),
+                                    "expected string literal",
+                                ));
                             }
                         } else {
-                            panic!("missing body")
+                            return Err(syn::Error::new(cnst.span(), "expected string literal"));
                         };
                         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
                         let path = std::path::Path::new(&manifest_dir).join(path);
-                        initialize += &std::fs::read_to_string(&path).map_err(|e| {
+                        custom_code += &std::fs::read_to_string(&path).map_err(|e| {
                             syn::Error::new(
                                 cnst.span(),
                                 format!(
@@ -245,16 +224,6 @@ impl Parse for Bindings {
                     let f = FunctionBinding::new(&mut encoders, f);
                     functions.push(f);
                 }
-                #[allow(unused)]
-                syn::Item::ForeignMod(m) =>
-                {
-                    #[cfg(feature = "web")]
-                    for item in m.items {
-                        if let syn::ForeignItem::Fn(f) = item {
-                            foreign_items.push(f)
-                        }
-                    }
-                }
                 syn::Item::Struct(strct) => {
                     buffer = Some(strct.ident);
                 }
@@ -263,19 +232,17 @@ impl Parse for Bindings {
         }
 
         for encoder in encoders.values() {
-            initialize += &encoder.global_js();
+            initialize += &encoder.initializer();
         }
 
         let msg_ptr_u32 = encoders.builder().u32();
         let msg_moved_flag = encoders.builder().flag();
 
         Ok(Bindings {
-            args: Args { module: false },
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
-            #[cfg(feature = "web")]
-            foreign_items,
             initialize,
+            custom_code,
             encoders,
             msg_ptr_u32,
             msg_moved_flag,
@@ -360,47 +327,65 @@ impl Bindings {
         let declarations = if all_variables.is_empty() {
             String::new()
         } else {
-            format!(
-                "let {};",
-                all_variables.into_iter().collect::<Vec<_>>().join(",")
-            )
+            let mut all_variables_string = String::from("let ");
+            for var in all_variables {
+                all_variables_string += var;
+                all_variables_string += ",";
+            }
+            all_variables_string.pop();
+            all_variables_string += ";";
+            all_variables_string
         };
 
-        let maybe_export = if self.args.module { "export " } else { "" };
+        let custom_code = &self.custom_code;
 
         let js = format!(
-            r#"let m,p,ls,d,t,op,i,e,z,metaflags;
-            {initialize}
+            r#"
             {declarations}
-            {maybe_export} function create(r){{
-                d=r;
-            }}
-            {maybe_export} function update_memory(b){{
-                m=new DataView(b.buffer)
-            }}
-            {maybe_export} function run(){{
-                {pre_run_metadata}
-                if({msg_ptr_moved}){{
-                    ls={read_msg_ptr};
+            export class JSChannel {{
+                constructor(r) {{
+                    this.d=r;
+                    this.m = null;
+                    this.p = null;
+                    this.ls = null;
+                    this.t = null;
+                    this.op = null;
+                    this.e = null;
+                    this.z = null;
+                    this.metaflags = null;
+                    {initialize}
+                    {custom_code}
                 }}
-                p=ls;
-                {pre_run_js}
-                for(;;){{
-                    op=m.getUint32(p,true);
-                    p+=4;
-                    z=0;
-                    while(z++<{reads_per_u32}){{
-                        switch(op&{op_mask}){{
-                            {match_op}
+
+                update_memory(b){{
+                    this.m=new DataView(b.buffer)
+                }}
+
+                run(){{
+                    {pre_run_metadata}
+                    if({msg_ptr_moved}){{
+                        this.ls={read_msg_ptr};
+                    }}
+                    this.p=this.ls;
+                    {pre_run_js}
+                    for(;;){{
+                        this.op=this.m.getUint32(this.p,true);
+                        this.p+=4;
+                        this.z=0;
+                        while(this.z++<{reads_per_u32}){{
+                            switch(this.op&{op_mask}){{
+                                {match_op}
+                            }}
+                            this.op>>>={op_size};
                         }}
-                        op>>>={op_size};
                     }}
                 }}
-            }}
-            {maybe_export} function run_from_bytes(bytes){{
-                d = 0;
-                update_memory(new Uint8Array(bytes))
-                run()
+
+                run_from_bytes(bytes){{
+                    this.d = 0;
+                    this.update_memory(new Uint8Array(bytes))
+                    this.run()
+                }}
             }}"#,
         );
 
@@ -414,19 +399,25 @@ impl Bindings {
         let web_entrypoint = {
             #[cfg(feature = "web")]
             {
-                let foreign_items = &self.foreign_items;
-
                 let ty = &self.buffer;
                 quote! {
                     #[::sledgehammer_bindgen::wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
                     extern "C" {
-                        fn create(metadata_ptr: u32);
-                        fn run();
+                        pub type JSChannel;
+
+                        #[wasm_bindgen(constructor)]
+                        fn new(metadata_ptr: u32) -> JSChannel;
+
+                        #[wasm_bindgen(method)]
+                        fn run(this: &JSChannel);
+
+                        #[wasm_bindgen(method)]
                         #[doc = concat!("Runs the serialized message provided")]
                         #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
-                        pub fn run_from_buffer(buffer: &[u8]);
-                        fn update_memory(memory: ::sledgehammer_bindgen::wasm_bindgen::JsValue);
-                        #(#foreign_items)*
+                        pub fn run_from_buffer(this: &JSChannel, buffer: &[u8]);
+
+                        #[wasm_bindgen(method)]
+                        fn update_memory(this: &JSChannel, memory: ::sledgehammer_bindgen::wasm_bindgen::JsValue);
                     }
                 }
             }
@@ -458,13 +449,6 @@ impl Bindings {
                 fn write_usize(&mut self, i: usize) {
                     self.0 = i as u64;
                 }
-            }
-            static LAST_MEM_SIZE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            fn set_last_mem_size(size: usize) {
-                LAST_MEM_SIZE.store(size, std::sync::atomic::Ordering::SeqCst);
-            }
-            fn get_last_mem_size() -> usize {
-                LAST_MEM_SIZE.load(std::sync::atomic::Ordering::SeqCst)
             }
             #web_entrypoint
             #channel
@@ -566,6 +550,42 @@ impl Bindings {
         let set_msg_moved = self.msg_moved_flag.write_rust(parse_quote! {msg_moved});
         let get_msg_ptr = self.msg_ptr_u32.get_rust();
 
+        let js_channel_field = if cfg!(feature = "web") {
+            quote! {
+                #[cfg(target_family = "wasm")]
+                js_channel: JSChannel,
+            }
+        } else {
+            quote!()
+        };
+
+        let js_channel_init = if cfg!(feature = "web") {
+            quote! {
+                #[cfg(target_family = "wasm")]
+                // SAFETY: self.metadata is pinned, initialized and we will not write to it while javascript is reading from it
+                js_channel: JSChannel::new(#meta_ident.as_ref().get_ref() as *const _ as u32),
+            }
+        } else {
+            quote!()
+        };
+
+        let js_channel_getter = if cfg!(feature = "web") {
+            quote! {
+                pub fn js_channel(&self) -> &JSChannel {
+                    #[cfg(target_family = "wasm")]
+                    {
+                        &self.js_channel
+                    }
+                    #[cfg(not(target_family = "wasm"))]
+                    {
+                        panic!("js_channel is only available in wasm")
+                    }
+                }
+            }
+        } else {
+            quote!()
+        };
+
         quote! {
             fn __copy(src: &[u8], dst: &mut [u8], len: usize) {
                 for (m, i) in dst.iter_mut().zip(src.iter().take(len)) {
@@ -577,17 +597,24 @@ impl Bindings {
                 msg: Vec<u8>,
                 current_op_batch_idx: usize,
                 current_op_byte_idx: usize,
-                #( #states )*
+                last_mem_size: usize,
                 #meta_ident: #meta_type,
+                #js_channel_field
+                first_run: bool,
+                #( #states )*
             }
 
             impl Default for #ty {
                 fn default() -> Self {
+                    let #meta_ident: #meta_type = #meta_init;
                     Self {
                         msg: Vec::new(),
                         current_op_batch_idx: 0,
+                        last_mem_size: 0,
                         current_op_byte_idx: #reads_per_u32,
-                        #meta_ident: #meta_init,
+                        #js_channel_init
+                        first_run: true,
+                        #meta_ident,
                         #( #states_default )*
                     }
                 }
@@ -631,13 +658,13 @@ impl Bindings {
 
                         let new_mem_size = core::arch::wasm32::memory_size(0);
                         // we need to update the memory if the memory has grown
-                        if new_mem_size != get_last_mem_size() {
-                            set_last_mem_size(new_mem_size);
-                            update_memory(::sledgehammer_bindgen::wasm_bindgen::memory());
+                        if new_mem_size != self.last_mem_size {
+                            self.last_mem_size = new_mem_size;
+                            self.js_channel.update_memory(::sledgehammer_bindgen::wasm_bindgen::memory());
                             #(#memory_moved_rust)*
                         }
 
-                        run();
+                        self.js_channel.run();
 
                         self.reset();
                     }
@@ -673,20 +700,17 @@ impl Bindings {
                     self.msg.clear();
                 }
 
+                #js_channel_getter
+
                 fn update_metadata_ptrs(&mut self) {
-                    static FIRST_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-                    let first_run = FIRST_RUN.swap(false, std::sync::atomic::Ordering::Relaxed);
+                    let first_run = self.first_run;
+                    self.first_run = false;
                     let metadata_ptr = self.metadata.as_ref().get_ref() as *const _ as u32;
 
                     // the pointer will only be updated when the message vec is resized, so we have a flag to check if the pointer has changed to avoid unnecessary decoding
                     if first_run {
                         #(#first_run_states)*
                         // this is the first message, so we need to encode all the metadata
-                        #[cfg(target_family = "wasm")]
-                        unsafe{
-                            // SAFETY: self.metadata is pinned, initialized and we will not write to it while javascript is reading from it
-                            create(metadata_ptr);
-                        }
                         #set_msg_ptr
                         let msg_moved = true;
                         #set_msg_moved

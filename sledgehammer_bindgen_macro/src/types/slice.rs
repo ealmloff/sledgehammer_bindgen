@@ -57,16 +57,16 @@ impl<const N: u32, const S: u32, const STATIC: bool> Encode for Slice<N, S, STAT
         let len_read = self.len.encode_js();
         if STATIC {
             match N {
-                1 => format!("new Uint8Array(m.buffer,{},{})", ptr_read, len_read),
-                2 => format!("new Uint16Array(m.buffer,{},{})", ptr_read, len_read),
-                4 => format!("new Uint32Array(m.buffer,{},{})", ptr_read, len_read),
+                1 => format!("new Uint8Array(this.m.buffer,{},{})", ptr_read, len_read),
+                2 => format!("new Uint16Array(this.m.buffer,{},{})", ptr_read, len_read),
+                4 => format!("new Uint32Array(this.m.buffer,{},{})", ptr_read, len_read),
                 _ => todo!(),
             }
         } else {
             let array_ptr = self.array().pointer_js();
             let array_read = self.array().js_ident();
             let slice_end = format!("{array_ptr}+{len_read}");
-            format!("(()=>{{e={slice_end};const final_array = {array_read}.slice({array_ptr},e);{array_ptr}=e;return final_array;}})()")
+            format!("(()=>{{this.e={slice_end};const final_array = {array_read}.slice({array_ptr},this.e);{array_ptr}=this.e;return final_array;}})()")
         }
     }
 

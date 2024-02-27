@@ -62,8 +62,9 @@ impl Encoder for GeneralString {
         parse_quote! {str_buffer}
     }
 
-    fn global_js(&self) -> String {
-        "let s = \"\";let lsp,sp,sl; let c = new TextDecoder();".to_string()
+    fn initializer(&self) -> String {
+        "this.s = \"\";this.lsp = null;this.sp = null;this.sl = null;this.c = new TextDecoder();"
+            .to_string()
     }
 
     fn pre_run_js(&self) -> String {
@@ -74,32 +75,32 @@ impl Encoder for GeneralString {
         let len = self.len.read_js();
         format!(
             r#"if ({moved}){{
-                lsp = {ptr};
+                this.lsp = {ptr};
             }}
             if ({used}) {{
-                sl = {len};
+                this.sl = {len};
                 if ({tiny}) {{
-                    sp = lsp;
-                    s = "";
-                    e = sp + ((sl / 4) | 0) * 4;
-                    while (sp < e) {{
-                        t = m.getUint32(sp, true);
-                        s += String.fromCharCode(
-                            t & 255,
-                            (t & 65280) >> 8,
-                            (t & 16711680) >> 16,
-                            t >> 24
+                    this.sp = this.lsp;
+                    this.s = "";
+                    this.e = this.sp + ((this.sl / 4) | 0) * 4;
+                    while (this.sp < this.e) {{
+                        this.t = this.m.getUint32(this.sp, true);
+                        this.s += String.fromCharCode(
+                            this.t & 255,
+                            (this.t & 65280) >> 8,
+                            (this.t & 16711680) >> 16,
+                            this.t >> 24
                         );
-                        sp += 4;
+                        this.sp += 4;
                     }}
-                    while (sp < lsp + sl) {{
-                        s += String.fromCharCode(m.getUint8(sp++));
+                    while (this.sp < this.lsp + this.sl) {{
+                        this.s += String.fromCharCode(this.m.getUint8(this.sp++));
                     }}
                 }} else {{
-                    s = c.decode(new DataView(m.buffer, lsp, sl));
+                    this.s = this.c.decode(new DataView(this.m.buffer, this.lsp, this.sl));
                 }}
             }}
-            sp=0;"#
+            this.sp=0;"#
         )
     }
 
@@ -224,7 +225,7 @@ impl<const S: u32> Encoder for StrEncoder<S> {
         }
     }
 
-    fn global_js(&self) -> String {
+    fn initializer(&self) -> String {
         match &self.cache_name {
             Some((cache, encoder)) => {
                 let get_u8 = encoder.encode_js();
@@ -232,19 +233,20 @@ impl<const S: u32> Encoder for StrEncoder<S> {
                 let cache_idx_mask = !CACHE_MISS_BIT;
                 let read_string_length = self.size_type.encode_js();
                 format!(
-                    "const {cache} = [];
-                    let {cache}_cache_hit, {cache}_cache_idx;
-                    function get_{cache}() {{
-                        {cache}_cache_idx = {get_u8};
-                        if({cache}_cache_idx & {CACHE_MISS_BIT}){{
-                            {cache}_cache_hit=s.substring(sp,sp+={read_string_length});
-                            {cache}[{cache}_cache_idx&{cache_idx_mask}]={cache}_cache_hit;
-                            return {cache}_cache_hit;
+                    "this.{cache} = [];
+                    this.{cache}_cache_hit = null;
+                    this.{cache}_cache_idx;
+                    this.get_{cache} = function() {{
+                        this.{cache}_cache_idx = {get_u8};
+                        if(this.{cache}_cache_idx & {CACHE_MISS_BIT}){{
+                            this.{cache}_cache_hit=this.s.substring(this.sp,this.sp+={read_string_length});
+                            this.{cache}[this.{cache}_cache_idx&{cache_idx_mask}]=this.{cache}_cache_hit;
+                            return this.{cache}_cache_hit;
                         }}
                         else{{
-                            return {cache}[{cache}_cache_idx&{cache_idx_mask}];
+                            return this.{cache}[this.{cache}_cache_idx&{cache_idx_mask}];
                         }}
-                    }}",
+                    }};",
                 )
             }
             None => "".to_string(),
@@ -255,8 +257,11 @@ impl<const S: u32> Encoder for StrEncoder<S> {
 impl<const S: u32> Encode for StrEncoder<S> {
     fn encode_js(&self) -> String {
         match &self.cache_name {
-            Some((cache, _)) => format!("get_{cache}()"),
-            None => format!("s.substring(sp,sp+={})", self.size_type.encode_js()),
+            Some((cache, _)) => format!("this.get_{cache}()"),
+            None => format!(
+                "this.s.substring(this.sp,this.sp+={})",
+                self.size_type.encode_js()
+            ),
         }
     }
 
