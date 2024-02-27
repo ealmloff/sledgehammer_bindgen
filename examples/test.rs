@@ -1,4 +1,5 @@
 use sledgehammer_bindgen::bindgen;
+use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{console, Node};
 
 fn main() {
@@ -6,15 +7,7 @@ fn main() {
     mod js {
         struct Channel;
 
-        const JS: &str = r#"const nodes = [document.getElementById("main")];
-        export function get_node(id){
-            return nodes[id];
-        }"#;
-
-        extern "C" {
-            #[wasm_bindgen]
-            fn get_node(id: u16) -> Node;
-        }
+        const JS: &str = r#"this.nodes = [document.getElementById("main")];"#;
 
         fn create_element(id: u16, name: &'static str<u8, name_cache>) {
             "nodes[$id$]=document.createElement($name$);"
@@ -69,6 +62,15 @@ fn main() {
         }
     }
 
+    #[wasm_bindgen(inline_js = "
+    export function get_node(channel, id){
+        return channel.nodes[id];
+    }
+")]
+    extern "C" {
+        fn get_node(node: &JSChannel, id: u16) -> Node;
+    }
+
     let mut channel1 = Channel::default();
     let main = 0;
     let node1 = 1;
@@ -80,5 +82,5 @@ fn main() {
     channel1.append_child(main, node1);
     channel1.flush();
 
-    console::log_1(&get_node(0).into());
+    console::log_1(&get_node(channel1.js_channel(), 0).into());
 }

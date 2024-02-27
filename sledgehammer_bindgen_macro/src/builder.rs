@@ -40,7 +40,7 @@ impl BindingBuilder {
     }
 
     pub fn pre_run_js(&self) -> String {
-        "metaflags=m.getUint32(d,true);".to_string()
+        "this.metaflags=this.m.getUint32(this.d,true);".to_string()
     }
 }
 
@@ -50,7 +50,7 @@ pub struct RustJSU32 {
 
 impl RustJSU32 {
     pub fn read_js(&self) -> String {
-        format!("m.getUint32(d+{}*4,true)", self.id + 1)
+        format!("this.m.getUint32(this.d+{}*4,true)", self.id + 1)
     }
 
     pub fn write_rust(&self, value: Expr) -> TokenStream2 {
@@ -76,7 +76,7 @@ pub struct RustJSFlag {
 
 impl RustJSFlag {
     pub fn read_js(&self) -> String {
-        select_bits_js_inner("metaflags", 32, self.id, 1)
+        select_bits_js_inner("this.metaflags", 32, self.id, 1)
     }
 
     pub fn write_rust(&self, value: Expr) -> TokenStream2 {

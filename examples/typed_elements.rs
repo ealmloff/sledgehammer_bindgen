@@ -1,5 +1,6 @@
 #![allow(unused)]
 use sledgehammer_bindgen::bindgen;
+use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{console, Node};
 
 fn main() {
@@ -7,11 +8,8 @@ fn main() {
     mod js {
         struct Channel;
 
-        const JS: &str = r#"const nodes = [document.getElementById("main")];
-export function get_node(id){
-    return nodes[id];
-}
-const els = [
+        const JS: &str = r#"this.nodes = [document.getElementById("main")];
+this.els = [
     "a",
     "abbr",
     "acronym",
@@ -148,7 +146,7 @@ const els = [
     "xmp",
 ];
 
-const attrs = [
+this.attrs = [
     "accept-charset",
     "accept",
     "accesskey",
@@ -304,54 +302,58 @@ const attrs = [
     "wrap",
 ];"#;
 
-        extern "C" {
-            #[wasm_bindgen]
-            fn get_node(id: u16) -> Node;
-        }
-
         fn create_element(id: u16, element_id: u8) {
-            "nodes[$id$]=document.createElement(els[$element_id$]);"
+            "this.nodes[$id$]=document.createElement(this.els[$element_id$]);"
         }
 
         fn set_attribute(id: u16, attribute_id: u8, val: impl Writable<u8>) {
-            "nodes[$id$].setAttribute(attrs[$attribute_id$],$val$);"
+            "this.nodes[$id$].setAttribute(this.attrs[$attribute_id$],$val$);"
         }
 
         fn remove_attribute(id: u16, attribute_id: u8) {
-            "nodes[$id$].removeAttribute(attrs[$attribute_id$]);"
+            "this.nodes[$id$].removeAttribute(this.attrs[$attribute_id$]);"
         }
 
         fn append_child(id: u16, id2: u16) {
-            "nodes[$id$].appendChild(nodes[$id2$]);"
+            "this.nodes[$id$].appendChild(this.nodes[$id2$]);"
         }
 
         fn insert_before(parent: u16, id: u16, id2: u16) {
-            "nodes[$parent$].insertBefore(nodes[$id$],nodes[$id2$]);"
+            "this.nodes[$parent$].insertBefore(this.nodes[$id$],this.nodes[$id2$]);"
         }
 
         fn set_text(id: u16, text: impl Writable<u8>) {
-            "nodes[$id$].textContent=$text$;"
+            "this.nodes[$id$].textContent=$text$;"
         }
 
         fn remove(id: u16) {
-            "nodes[$id$].remove();"
+            "this.nodes[$id$].remove();"
         }
 
         fn replace(id: u16, id2: u16) {
-            "nodes[$id$].replaceWith(nodes[$id2$]);"
+            "this.nodes[$id$].replaceWith(this.nodes[$id2$]);"
         }
 
         fn clone(id: u16, id2: u16) {
-            "nodes[$id2$]=nodes[$id$].cloneNode(true);"
+            "this.nodes[$id2$]=this.nodes[$id$].cloneNode(true);"
         }
 
         fn first_child(id: u16) {
-            "nodes[id]=nodes[id].firstChild;"
+            "this.nodes[id]=this.nodes[id].firstChild;"
         }
 
         fn next_sibling(id: u16) {
-            "nodes[id]=nodes[id].nextSibling;"
+            "this.nodes[id]=this.nodes[id].nextSibling;"
         }
+    }
+
+    #[wasm_bindgen(inline_js = "
+        export function get_node(channel, id){
+            return channel.nodes[id];
+        }
+    ")]
+    extern "C" {
+        fn get_node(node: &JSChannel, id: u16) -> Node;
     }
 
     let mut channel1 = Channel::default();
@@ -365,7 +367,7 @@ const attrs = [
     channel1.append_child(main, node1);
     channel1.flush();
 
-    console::log_1(&get_node(0).into());
+    console::log_1(&get_node(channel1.js_channel(), 0).into());
 }
 
 #[allow(non_camel_case_types)]

@@ -14,7 +14,7 @@ pub trait CreateEncoder {
 }
 
 pub trait Encoder {
-    fn global_js(&self) -> String {
+    fn initializer(&self) -> String {
         String::new()
     }
 
@@ -84,8 +84,8 @@ impl EncodeTraitObject {
 }
 
 impl Encoder for EncodeTraitObject {
-    fn global_js(&self) -> String {
-        self.0.global_js()
+    fn initializer(&self) -> String {
+        self.0.initializer()
     }
 
     fn pre_run_js(&self) -> String {

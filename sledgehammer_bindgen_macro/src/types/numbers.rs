@@ -15,7 +15,7 @@ pub struct NumberEncoder<const S: u32> {
 impl<const S: u32> NumberEncoder<S> {
     pub fn pointer_js(&self) -> String {
         let size = self.size();
-        format!("u{size}bufp")
+        format!("this.u{size}bufp")
     }
 
     pub fn size(&self) -> u32 {
@@ -63,9 +63,9 @@ impl<const S: u32> CreateEncoder for NumberEncoderFactory<S> {
 }
 
 impl<const S: u32> Encoder for NumberEncoder<S> {
-    fn global_js(&self) -> String {
+    fn initializer(&self) -> String {
         let size = self.size();
-        format!("let u{size}buf,u{size}bufp;")
+        format!("this.u{size}buf=null;this.u{size}bufp=null;")
     }
 
     fn pre_run_js(&self) -> String {
@@ -76,8 +76,8 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
         let pointer = self.pointer_js();
         format!(
             "if ({moved}){{
-                t = {ptr};
-                u{size}buf=new Uint{size}Array(m.buffer,t,((m.buffer.byteLength-t)-(m.buffer.byteLength-t)%{size_in_bytes})/{size_in_bytes});
+                this.t = {ptr};
+                this.u{size}buf=new Uint{size}Array(this.m.buffer,this.t,((this.m.buffer.byteLength-this.t)-(this.m.buffer.byteLength-this.t)%{size_in_bytes})/{size_in_bytes});
             }}
             {pointer}=0;"
         )
@@ -142,7 +142,8 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
                 current_ptr += buffer_size;
             }
         });
-        let buffer_memory = quote! { self.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()) };
+        let buffer_memory =
+            quote! { self.#ident.iter().flat_map(|&x| x.to_le_bytes().into_iter()) };
         let final_memory = if S != 1 {
             quote! {
                 zeroed_buffer.chain(#buffer_memory)
@@ -165,7 +166,7 @@ impl<const S: u32> Encoder for NumberEncoder<S> {
 impl<const S: u32> NumberEncoder<S> {
     pub(crate) fn js_ident(&self) -> String {
         let size = self.size();
-        format!("u{size}buf")
+        format!("this.u{size}buf")
     }
 }
 
@@ -173,7 +174,7 @@ impl<const S: u32> Encode for NumberEncoder<S> {
     fn encode_js(&self) -> String {
         let size = self.size();
         let pointer = self.pointer_js();
-        format!("u{size}buf[{pointer}++]")
+        format!("this.u{size}buf[{pointer}++]")
     }
 
     fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
