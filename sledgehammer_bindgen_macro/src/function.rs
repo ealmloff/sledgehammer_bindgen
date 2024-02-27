@@ -79,52 +79,53 @@ impl FunctionBinding {
             panic!("missing body")
         };
 
-        let should_inline = {
-            let mut inlined_count = 0;
-            parse_js_body(&body, |_| inlined_count += 1);
-            inlined_count == myself.type_encodings.len()
-        };
-
-        let body = if should_inline {
+        // Inline every parameter we can
+        let body = parse_js_body(&body, |parameter| {
             // We need to reorder the javascript_decodings to match the order of the parameters
-            parse_js_body(&body, |parameter| {
-                let idx = myself
-                    .type_encodings
-                    .iter()
-                    .position(|e| e.ident == parameter)
-                    .unwrap_or_else(|| {
-                        panic!("attempted to inline an unknown parameter: {}", parameter)
-                    });
-                let encoding = &myself.type_encodings[idx];
-                *parameter = encoding.decode_js.clone();
-                myself.encoding_order.push(idx);
-            })
-        } else {
-            myself.encoding_order = (0..myself.type_encodings.len()).collect();
-
-            let javascript_decodings: Vec<_> = myself
+            let idx = myself
                 .type_encodings
                 .iter()
-                .map(|encoding| (encoding.ident.to_string(), encoding.decode_js.clone()))
-                .collect();
+                .position(|e| e.ident == parameter)
+                .unwrap_or_else(|| {
+                    panic!("attempted to inline an unknown parameter: {}", parameter)
+                });
+            let encoding = &myself.type_encodings[idx];
+            *parameter = encoding.decode_js.clone();
+            myself.encoding_order.push(idx);
+        });
 
-            myself.variables = javascript_decodings
-                .iter()
-                .map(|(k, _)| k.to_string())
-                .collect();
+        // Any remaining parameters are not inlined and must be decoded first
+        let non_inlined_parameter_indices: Vec<_> = (0..myself.type_encodings.len())
+            .filter(|idx| !myself.encoding_order.contains(idx))
+            .collect();
+        myself.encoding_order = non_inlined_parameter_indices
+            .iter()
+            .copied()
+            .chain(myself.encoding_order.iter().copied())
+            .collect();
 
-            let unmatched_decodings: String =
-                javascript_decodings
-                    .into_iter()
-                    .fold(String::new(), |mut state, (k, v)| {
-                        let _ = write!(state, "{}={};", k, v);
-                        state
-                    });
+        let javascript_decodings: Vec<_> = myself
+            .type_encodings
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| non_inlined_parameter_indices.contains(idx))
+            .map(|(_, encoding)| (encoding.ident.to_string(), encoding.decode_js.clone()))
+            .collect();
 
-            myself.js_output = unmatched_decodings;
+        myself.variables = javascript_decodings
+            .iter()
+            .map(|(k, _)| k.to_string())
+            .collect();
 
-            parse_js_body(&body, |_| {})
-        };
+        let unmatched_decodings: String =
+            javascript_decodings
+                .into_iter()
+                .fold(String::new(), |mut state, (k, v)| {
+                    let _ = write!(state, "{}={};", k, v);
+                    state
+                });
+
+        myself.js_output = unmatched_decodings;
 
         myself.js_output += &body;
 

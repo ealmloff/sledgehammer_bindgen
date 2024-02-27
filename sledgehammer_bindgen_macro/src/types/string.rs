@@ -266,8 +266,8 @@ impl<const S: u32> Encode for StrEncoder<S> {
     }
 
     fn encode_rust(&self, name: &Ident) -> TokenStream2 {
-        let len = Ident::new("len", Span::call_site());
-        let char_len = Ident::new("char_len", Span::call_site());
+        let len = Ident::new("__len", Span::call_site());
+        let char_len = Ident::new("__char_len", Span::call_site());
         let write_len = self.size_type.encode_rust(&char_len);
         let char_len_type = self.size_type().element_type();
         let encode = quote! {
