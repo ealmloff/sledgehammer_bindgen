@@ -71,9 +71,9 @@ impl<const N: u32, const S: u32, const STATIC: bool> Encode for Slice<N, S, STAT
     }
 
     fn encode_rust(&self, ident: &Ident) -> TokenStream2 {
-        let len = Ident::new("len", Span::call_site());
+        let len = Ident::new("__len", Span::call_site());
         let encode_len = self.len.encode_rust(&len);
-        let ptr = Ident::new("ptr", Span::call_site());
+        let ptr = Ident::new("__ptr", Span::call_site());
         let encode_ptr = self.ptr.encode_rust(&ptr);
         let write_array = (!STATIC).then(|| {
             let item = Ident::new("_i", Span::call_site());
