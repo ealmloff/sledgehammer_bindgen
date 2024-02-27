@@ -13,7 +13,7 @@ categories = ["web-programming", "wasm", "api-bindings"]
 
 [dependencies]
 sledgehammer_bindgen_macro = { path = "sledgehammer_bindgen_macro", version = "0.4.0" }
-wasm-bindgen = { version = "*", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"
