@@ -59,6 +59,7 @@ use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use std::collections::HashSet;
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{parse::Parse, parse_macro_input, Ident};
 use syn::{parse_quote, Token};
 use types::string::GeneralStringFactory;
@@ -177,7 +178,7 @@ impl Parse for Bindings {
         for item in extern_block.content.unwrap().1 {
             match item {
                 syn::Item::Fn(f) => {
-                    let f = FunctionBinding::new(&mut encoders, f);
+                    let f = FunctionBinding::new(&mut encoders, f)?;
                     functions.push(f);
                 }
                 syn::Item::Struct(strct) => {
@@ -187,12 +188,13 @@ impl Parse for Bindings {
                         .iter()
                         .filter(|attr| attr.path().is_ident("extends"))
                     {
-                        let extends_classes: Punctuated<Ident, Token![,]> = attr.parse_args_with(Punctuated::parse_separated_nonempty)?;
+                        let extends_classes: Punctuated<Ident, Token![,]> =
+                            attr.parse_args_with(Punctuated::parse_separated_nonempty)?;
                         extends.extend(extends_classes.into_iter());
                     }
                     buffer = Some(strct.ident);
                 }
-                _ => panic!("only functions are supported"),
+                _ => return Err(syn::Error::new(item.span(), "expected function or struct")),
             }
         }
 

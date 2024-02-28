@@ -45,7 +45,7 @@ impl TypeEncoding {
 }
 
 impl FunctionBinding {
-    pub fn new(encoders: &mut Encoders, function: ItemFn) -> Self {
+    pub fn new(encoders: &mut Encoders, function: ItemFn) -> syn::Result<Self> {
         let name = function.sig.ident;
         let mut myself = Self {
             name,
@@ -57,12 +57,20 @@ impl FunctionBinding {
 
         for arg in function.sig.inputs {
             match arg {
-                syn::FnArg::Receiver(_) => todo!("handle self"),
+                syn::FnArg::Receiver(_) => {
+                    return Err(syn::Error::new_spanned(
+                        arg,
+                        "self is not supported in bindgen functions",
+                    ))
+                }
                 syn::FnArg::Typed(ty) => {
                     let ident = if let Pat::Ident(i) = &*ty.pat {
                         &i.ident
                     } else {
-                        panic!("only simple idents are supported")
+                        return Err(syn::Error::new_spanned(
+                            ty.pat,
+                            "only simple identifiers are supported",
+                        ));
                     };
                     myself.add(encoders, ident, ty.ty.deref().clone())
                 }
@@ -73,10 +81,16 @@ impl FunctionBinding {
             if let Lit::Str(s) = &lit.lit {
                 s.value()
             } else {
-                panic!("missing body")
+                return Err(syn::Error::new_spanned(
+                    lit,
+                    "only string literals are supported as function bodies",
+                ));
             }
         } else {
-            panic!("missing body")
+            return Err(syn::Error::new_spanned(
+                &function.block.stmts[0],
+                "only a single string literal is supported as function bodies",
+            ));
         };
 
         // Inline every parameter we can
@@ -129,7 +143,7 @@ impl FunctionBinding {
 
         myself.js_output += &body;
 
-        myself
+        Ok(myself)
     }
 
     pub fn js(&self) -> &str {
