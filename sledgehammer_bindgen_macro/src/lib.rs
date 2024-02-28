@@ -58,10 +58,9 @@ use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use std::collections::HashSet;
-use std::ops::Deref;
-use syn::parse_quote;
-use syn::spanned::Spanned;
-use syn::{parse::Parse, parse_macro_input, Expr, Ident, Lit};
+use syn::punctuated::Punctuated;
+use syn::{parse::Parse, parse_macro_input, Ident};
+use syn::{parse_quote, Token};
 use types::string::GeneralStringFactory;
 
 mod builder;
@@ -159,7 +158,7 @@ struct Bindings {
     buffer: Ident,
     functions: Vec<FunctionBinding>,
     initialize: String,
-    custom_code: String,
+    extends: Vec<Ident>,
     encoders: Encoders,
     msg_ptr_u32: RustJSU32,
     msg_moved_flag: RustJSFlag,
@@ -172,60 +171,25 @@ impl Parse for Bindings {
         let mut buffer = None;
         let mut functions = Vec::new();
         let mut initialize = String::new();
-        let mut custom_code = String::new();
+        let mut extends = Vec::new();
         let mut encoders = Encoders::default();
         encoders.insert(GeneralStringFactory);
         for item in extern_block.content.unwrap().1 {
             match item {
-                syn::Item::Const(cnst) => {
-                    if cnst.ident == "JS" {
-                        let body = if let Expr::Lit(lit) = cnst.expr.deref() {
-                            if let Lit::Str(s) = &lit.lit {
-                                s.value()
-                            } else {
-                                return Err(syn::Error::new(
-                                    cnst.span(),
-                                    "expected string literal",
-                                ));
-                            }
-                        } else {
-                            return Err(syn::Error::new(cnst.span(), "expected string literal"));
-                        };
-                        custom_code += &body;
-                    }
-                    if cnst.ident == "JS_FILE" {
-                        let path = if let Expr::Lit(lit) = cnst.expr.deref() {
-                            if let Lit::Str(s) = &lit.lit {
-                                s.value()
-                            } else {
-                                return Err(syn::Error::new(
-                                    cnst.span(),
-                                    "expected string literal",
-                                ));
-                            }
-                        } else {
-                            return Err(syn::Error::new(cnst.span(), "expected string literal"));
-                        };
-                        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-                        let path = std::path::Path::new(&manifest_dir).join(path);
-                        custom_code += &std::fs::read_to_string(&path).map_err(|e| {
-                            syn::Error::new(
-                                cnst.span(),
-                                format!(
-                                    "failed to read file {} (from dir {}): {}",
-                                    path.display(),
-                                    manifest_dir,
-                                    e
-                                ),
-                            )
-                        })?;
-                    }
-                }
                 syn::Item::Fn(f) => {
                     let f = FunctionBinding::new(&mut encoders, f);
                     functions.push(f);
                 }
                 syn::Item::Struct(strct) => {
+                    // parse #[extends(Foo, Bar)]
+                    for attr in strct
+                        .attrs
+                        .iter()
+                        .filter(|attr| attr.path().is_ident("extends"))
+                    {
+                        let extends_classes: Punctuated<Ident, Token![,]> = attr.parse_args_with(Punctuated::parse_separated_nonempty)?;
+                        extends.extend(extends_classes.into_iter());
+                    }
                     buffer = Some(strct.ident);
                 }
                 _ => panic!("only functions are supported"),
@@ -242,8 +206,8 @@ impl Parse for Bindings {
         Ok(Bindings {
             buffer: buffer.unwrap_or(Ident::new("Channel", Span::call_site())),
             functions,
+            extends,
             initialize,
-            custom_code,
             encoders,
             msg_ptr_u32,
             msg_moved_flag,
@@ -338,13 +302,29 @@ impl Bindings {
             all_variables_string
         };
 
-        let custom_code = &self.custom_code;
+        let extends = if !self.extends.is_empty() {
+            let comma_separated_classes = self
+                .extends
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            "extends ".to_string() + &comma_separated_classes
+        } else {
+            String::new()
+        };
+        let super_constructor = if !self.extends.is_empty() {
+            "super();"
+        } else {
+            ""
+        };
 
         let js = format!(
             r#"
             {declarations}
-            export class JSChannel {{
+            export class JSChannel {extends} {{
                 constructor(r) {{
+                    {super_constructor}
                     this.d=r;
                     this.m = null;
                     this.p = null;
@@ -355,7 +335,6 @@ impl Bindings {
                     this.z = null;
                     this.metaflags = null;
                     {initialize}
-                    {custom_code}
                 }}
 
                 update_memory(b){{
@@ -401,9 +380,18 @@ impl Bindings {
             #[cfg(feature = "web")]
             {
                 let ty = &self.buffer;
+                let extends = if !self.extends.is_empty() {
+                    let classes = &self.extends;
+                    quote! {
+                        #[wasm_bindgen(extends = #(#classes),*)]
+                    }
+                } else {
+                    quote!()
+                };
                 quote! {
                     #[::sledgehammer_bindgen::wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
                     extern "C" {
+                        #extends
                         pub type JSChannel;
 
                         #[wasm_bindgen(constructor)]

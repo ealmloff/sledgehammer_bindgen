@@ -27,8 +27,23 @@ version = "0.3"
 features = ["Node", "console"]
 
 [features]
-default = ["web"]
+default = []
 web = ["wasm-bindgen", "sledgehammer_bindgen_macro/web"]
 
 [workspace]
 members = ["sledgehammer_bindgen_macro"]
+
+[[example]]
+name = "typed_elements"
+required-features = ["web"]
+
+[[example]]
+name = "test"
+required-features = ["web"]
+
+[[example]]
+name = "simple"
+required-features = ["web"]
+
+[[example]]
+name = "wry"
