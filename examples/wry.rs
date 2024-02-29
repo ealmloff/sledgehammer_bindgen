@@ -386,7 +386,7 @@ fn main() -> wry::Result<()> {
                         <script>
                             {}
                             {}
-                            let channel = new JSChannel();
+                            let channel = new RawChannel();
                             function wait_for_request() {{
                                 fetch(new Request("dioxus://index.html"))
                                     .then(response => {{

@@ -320,11 +320,12 @@ impl Bindings {
         } else {
             ""
         };
+        let class_name = self.buffer.to_string();
 
         let js = format!(
             r#"
             {declarations}
-            export class JSChannel {extends} {{
+            export class Raw{class_name} {extends} {{
                 constructor(r) {{
                     {super_constructor}
                     this.d=r;
@@ -390,25 +391,26 @@ impl Bindings {
                 } else {
                     quote!()
                 };
+                let raw_type = &Ident::new(&format!("Raw{}", ty), Span::call_site());
                 quote! {
                     #[::sledgehammer_bindgen::wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
                     extern "C" {
                         #extends
-                        pub type JSChannel;
+                        pub type #raw_type;
 
                         #[wasm_bindgen(constructor)]
-                        fn new(metadata_ptr: u32) -> JSChannel;
+                        fn new(metadata_ptr: u32) -> #raw_type;
 
                         #[wasm_bindgen(method)]
-                        fn run(this: &JSChannel);
+                        fn run(this: &#raw_type);
 
                         #[wasm_bindgen(method)]
                         #[doc = concat!("Runs the serialized message provided")]
                         #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
-                        pub fn run_from_buffer(this: &JSChannel, buffer: &[u8]);
+                        pub fn run_from_buffer(this: &#raw_type, buffer: &[u8]);
 
                         #[wasm_bindgen(method)]
-                        fn update_memory(this: &JSChannel, memory: ::sledgehammer_bindgen::wasm_bindgen::JsValue);
+                        fn update_memory(this: &#raw_type, memory: ::sledgehammer_bindgen::wasm_bindgen::JsValue);
                     }
                 }
             }
@@ -540,11 +542,12 @@ impl Bindings {
         let set_exported_msg_ptr = self.msg_ptr_u32.write_rust(parse_quote! {current_ptr});
         let set_msg_moved = self.msg_moved_flag.write_rust(parse_quote! {msg_moved});
         let get_msg_ptr = self.msg_ptr_u32.get_rust();
+        let raw_type = &Ident::new(&format!("Raw{}", ty), Span::call_site());
 
         let js_channel_field = if cfg!(feature = "web") {
             quote! {
                 #[cfg(target_family = "wasm")]
-                js_channel: JSChannel,
+                js_channel: #raw_type,
             }
         } else {
             quote!()
@@ -554,7 +557,7 @@ impl Bindings {
             quote! {
                 #[cfg(target_family = "wasm")]
                 // SAFETY: self.metadata is pinned, initialized and we will not write to it while javascript is reading from it
-                js_channel: JSChannel::new(#meta_ident.as_ref().get_ref() as *const _ as u32),
+                js_channel: #raw_type::new(#meta_ident.as_ref().get_ref() as *const _ as u32),
             }
         } else {
             quote!()
@@ -562,7 +565,7 @@ impl Bindings {
 
         let js_channel_getter = if cfg!(feature = "web") {
             quote! {
-                pub fn js_channel(&self) -> &JSChannel {
+                pub fn js_channel(&self) -> &#raw_type {
                     #[cfg(target_family = "wasm")]
                     {
                         &self.js_channel
