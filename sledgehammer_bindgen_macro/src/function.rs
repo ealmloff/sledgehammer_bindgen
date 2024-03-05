@@ -19,6 +19,7 @@ use crate::{
 };
 
 pub struct FunctionBinding {
+    attributes: Vec<syn::Attribute>,
     name: Ident,
     type_encodings: Vec<TypeEncoding>,
     encoding_order: Vec<usize>,
@@ -49,6 +50,7 @@ impl FunctionBinding {
         let name = function.sig.ident;
         let mut myself = Self {
             name,
+            attributes: function.attrs,
             type_encodings: Vec::new(),
             encoding_order: Vec::new(),
             variables: Vec::new(),
@@ -158,8 +160,10 @@ impl FunctionBinding {
             let encoding = &self.type_encodings[*idx];
             &encoding.encode_rust
         });
+        let attrs = &self.attributes;
 
         quote! {
+            #(#attrs)*
             #[allow(clippy::uninit_vec)]
             pub fn #name(&mut self, #(#args: #types),*) {
                 self.encode_op(#index);
