@@ -18,36 +18,36 @@
 //!        alt="docs.rs docs" />
 //!    </a>
 //!  </div>
-//!  
+//!
 //!  # What is Sledgehammer Bindgen?
 //!  Sledgehammer bindgen provides faster rust batched bindings into javascript code.
-//!  
+//!
 //!  # How does this compare to wasm-bindgen:
 //!  - wasm-bindgen is a lot more general it allows returning values and passing around a lot more different types of values. For most users wasm-bindgen is a beter choice. Sledgehammer bindgen is specifically that want low-level, fast access to javascript.
-//!  
+//!
 //!  - You can use sledgehammer bindgen with wasm-bindgen. See the docs and examples for more information.
-//!  
+//!
 //!  # Why is it fast?
-//!  
+//!
 //!  ## String decoding
-//!  
+//!
 //!  - Decoding strings are expensive to decode, but the cost doesn't change much with the size of the string. Wasm-bindgen calls TextDecoder.decode for every string. Sledgehammer only calls TextEncoder.decode once per batch.
-//!  
+//!
 //!  - If the string is small, it is faster to decode the string in javascript to avoid the constant overhead of TextDecoder.decode
-//!  
+//!
 //!  - See this benchmark: <https://jsbench.me/4vl97c05lb/5>
-//!  
+//!
 //!  ## String Caching
-//!  
+//!
 //!  - You can cache strings in javascript to avoid decoding the same string multiple times.
 //!  - If the string is static the string will be hashed by pointer instead of by value which is significantly faster.
-//!  
+//!
 //!  ## Byte encoded operations
-//!  
+//!
 //!  - Every operation is encoded as a sequence of bytes packed into an array. Every operation takes 1 byte plus whatever data is required for it.
-//!  
+//!
 //!  - Each operation is encoded in a batch of four as a u32. Getting a number from an array buffer has a high constant cost, but getting a u32 instead of a u8 is not more expensive. Sledgehammer bindgen reads the u32 and then splits it into the 4 individual bytes. It will shuffle and pack the bytes into as few buckets as possible and try to inline reads into the javascript.
-//!  
+//!
 //!  - See this benchmark: <https://jsbench.me/csl9lfauwi/2>
 
 use crate::encoder::Encoder;
@@ -57,11 +57,11 @@ use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use std::collections::HashSet;
-use syn::punctuated::Punctuated;
+use std::{collections::HashSet, ops::Deref};
 use syn::spanned::Spanned;
 use syn::{parse::Parse, parse_macro_input, Ident};
 use syn::{parse_quote, Token};
+use syn::{punctuated::Punctuated, Expr, Lit};
 use types::string::GeneralStringFactory;
 
 mod builder;
@@ -157,6 +157,7 @@ pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
 
 struct Bindings {
     buffer: Ident,
+    base: String,
     functions: Vec<FunctionBinding>,
     initialize: String,
     extends: Vec<Ident>,
@@ -169,6 +170,7 @@ impl Parse for Bindings {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let extern_block = syn::ItemMod::parse(input)?;
 
+        let mut base = String::new();
         let mut buffer = None;
         let mut functions = Vec::new();
         let mut initialize = String::new();
@@ -194,6 +196,35 @@ impl Parse for Bindings {
                     }
                     buffer = Some(strct.ident);
                 }
+                syn::Item::Const(cnst) => {
+                    if cnst.ident == "BASE" {
+                        let path = if let Expr::Lit(lit) = cnst.expr.deref() {
+                            if let Lit::Str(s) = &lit.lit {
+                                s.value()
+                            } else {
+                                return Err(syn::Error::new(
+                                    cnst.span(),
+                                    "expected string literal",
+                                ));
+                            }
+                        } else {
+                            return Err(syn::Error::new(cnst.span(), "expected string literal"));
+                        };
+                        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+                        let path = std::path::Path::new(&manifest_dir).join(path);
+                        base += &std::fs::read_to_string(&path).map_err(|e| {
+                            syn::Error::new(
+                                cnst.span(),
+                                format!(
+                                    "failed to read file {} (from dir {}): {}",
+                                    path.display(),
+                                    manifest_dir,
+                                    e
+                                ),
+                            )
+                        })?;
+                    }
+                }
                 _ => return Err(syn::Error::new(item.span(), "expected function or struct")),
             }
         }
@@ -213,6 +244,7 @@ impl Parse for Bindings {
             encoders,
             msg_ptr_u32,
             msg_moved_flag,
+            base,
         })
     }
 }
@@ -321,9 +353,11 @@ impl Bindings {
             ""
         };
         let class_name = self.buffer.to_string();
+        let base = &self.base;
 
         let js = format!(
             r#"
+            {base}
             {declarations}
             export class Raw{class_name} {extends} {{
                 constructor(r) {{
