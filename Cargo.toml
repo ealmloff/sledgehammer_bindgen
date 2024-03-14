@@ -1,6 +1,6 @@
 [package]
 name = "sledgehammer_bindgen"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["Evan Almloff <ealmlof1@stumail.jccc.edu>"]
 edition = "2021"
 description = "Fast batched js bindings"
@@ -12,7 +12,7 @@ keywords = ["web", "wasm", "dom"]
 categories = ["web-programming", "wasm", "api-bindings"]
 
 [dependencies]
-sledgehammer_bindgen_macro = { path = "sledgehammer_bindgen_macro", version = "0.4.0" }
+sledgehammer_bindgen_macro = { path = "sledgehammer_bindgen_macro", version = "0.5.0" }
 wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
