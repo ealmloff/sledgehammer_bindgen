@@ -7,6 +7,12 @@ use std::{
 use sledgehammer_bindgen::bindgen;
 use wry::http::Response;
 
+#[cfg(any(target_os = "android", target_os = "windows"))]
+const INDEX_PATH: &str = "http://dioxus.index.html";
+
+#[cfg(not(any(target_os = "android", target_os = "windows")))]
+const INDEX_PATH: &str = "dioxus://index.html";
+
 const TYPED_JS: &str = include_str!("./typed_elements.js");
 
 #[bindgen]
@@ -372,7 +378,7 @@ fn main() -> wry::Result<()> {
         .build(&event_loop)?;
     let first_request = Cell::new(true);
     let _webview = WebViewBuilder::new(window)?
-        .with_url("dioxus://index.html/")
+        .with_url(INDEX_PATH)
         .unwrap()
         .with_asynchronous_custom_protocol("dioxus".into(), move |_, responder| {
             if first_request.get() {
@@ -388,7 +394,7 @@ fn main() -> wry::Result<()> {
                             {}
                             let channel = new RawChannel();
                             function wait_for_request() {{
-                                fetch(new Request("dioxus://index.html"))
+                                fetch(new Request("{INDEX_PATH}")) 
                                     .then(response => {{
                                         response.arrayBuffer()
                                             .then(bytes => {{
