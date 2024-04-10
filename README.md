@@ -23,7 +23,7 @@
 Sledgehammer bindgen provides faster rust batched bindings for js code.
 
 # How does this compare to wasm-bindgen:
-- wasm-bindgen is a lot more general it allows returning values and passing around a lot more different types of values. For most users wasm-bindgen is a beter choice. Sledgehammer is specifically designed for web frameworks that want low-level, fast access to the dom.
+- wasm-bindgen is a lot more general it allows returning values and passing around a lot more different types of values. For most users wasm-bindgen is a better choice. Sledgehammer is specifically designed for web frameworks that want low-level, fast access to the dom.
 
 - You can use sledgehammer bindgen with wasm-bindgen. See the docs and examples for more information.
 
