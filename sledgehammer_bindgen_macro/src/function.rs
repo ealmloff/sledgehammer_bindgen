@@ -106,7 +106,7 @@ impl FunctionBinding {
                     panic!("attempted to inline an unknown parameter: {}", parameter)
                 });
             let encoding = &myself.type_encodings[idx];
-            *parameter = encoding.decode_js.clone();
+            parameter.clone_from(&encoding.decode_js);
             myself.encoding_order.push(idx);
         });
 
