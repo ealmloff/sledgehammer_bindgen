@@ -97,7 +97,15 @@ impl Encoder for GeneralString {
                         this.s += String.fromCharCode(this.m.getUint8(this.sp++));
                     }}
                 }} else {{
-                    this.s = this.c.decode(new DataView(this.m.buffer, this.lsp, this.sl));
+                    let buffer = new Uint8Array(this.m.buffer, this.lsp, this.sl);
+                    // If the wasm buffer is a shared array buffer, we need to copy the data out before decoding https://github.com/DioxusLabs/dioxus/issues/2589
+                    // Note: We intentionally don't use instanceof here because SharedArrayBuffer can be created even when SharedArrayBuffer is not defined...
+                    if (this.m.buffer.constructor.name === "SharedArrayBuffer") {{
+                        let arrayBuffer = new ArrayBuffer(this.sl);
+                        new Uint8Array(arrayBuffer).set(buffer);
+                        buffer = arrayBuffer;
+                    }}
+                    this.s = this.c.decode(buffer);
                 }}
             }}
             this.sp=0;"#
