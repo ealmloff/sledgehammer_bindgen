@@ -12,7 +12,7 @@ keywords = ["web", "wasm", "dom"]
 categories = ["web-programming", "wasm", "api-bindings"]
 
 [dependencies]
-sledgehammer_bindgen_macro = { path = "sledgehammer_bindgen_macro", version = "0.5.0" }
+sledgehammer_bindgen_macro = { path = "sledgehammer_bindgen_macro", version = "0.6.0" }
 wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
