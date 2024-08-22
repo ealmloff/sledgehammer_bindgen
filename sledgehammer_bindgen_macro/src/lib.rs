@@ -455,28 +455,6 @@ impl Bindings {
         };
 
         quote! {
-            #[derive(Default)]
-            struct NonHashBuilder;
-            impl std::hash::BuildHasher for NonHashBuilder {
-                type Hasher = NonHash;
-                fn build_hasher(&self) -> Self::Hasher {
-                    NonHash(0)
-                }
-            }
-            #[allow(unused)]
-            #[derive(Default)]
-            struct NonHash(u64);
-            impl std::hash::Hasher for NonHash {
-                fn finish(&self) -> u64 {
-                    self.0
-                }
-                fn write(&mut self, bytes: &[u8]) {
-                    unreachable!()
-                }
-                fn write_usize(&mut self, i: usize) {
-                    self.0 = i as u64;
-                }
-            }
             #web_entrypoint
             #channel
             const GENERATED_JS: &str = #all_js;

@@ -213,11 +213,11 @@ impl<const S: u32> Encoder for StrEncoder<S> {
         if self.cache_name.is_some() {
             if self.static_str {
                 parse_quote! {
-                    sledgehammer_utils::ConstLru<*const str, NonHashBuilder, 128, 256>
+                    sledgehammer_utils::PtrConstLru<128, 256>
                 }
             } else {
                 parse_quote! {
-                    sledgehammer_utils::LruCache
+                    sledgehammer_utils::FxConstLru<String, 128, 256>
                 }
             }
         } else {
@@ -295,45 +295,26 @@ impl<const S: u32> Encode for StrEncoder<S> {
         };
         match &self.cache_name {
             Some((cache, size)) => {
-                if self.static_str {
-                    let write_size = size.encode_rust(&Ident::new("cache_id", Span::call_site()));
+                let write_size = size.encode_rust(&Ident::new("cache_id", Span::call_site()));
+                let push = if self.static_str {
                     quote! {
-                        let (_id, _new) = self.#cache.push(#name);
-                        if _new {
-                            let cache_id = #CACHE_MISS_BIT as u8 | _id;
-                            #write_size
-                            #encode
-                        }
-                        else {
-                            let cache_id = _id;
-                            #write_size
-                        }
+                        self.#cache.push(&(sledgehammer_utils::StaticPtr::from(#name)))
                     }
                 } else {
-                    let write_size = size.encode_rust(&Ident::new("cache_id", Span::call_site()));
                     quote! {
-                        if let Some(&id) = self.#cache.get(#name){
-                            let cache_id = id;
-                            #write_size
-                        }
-                        else {
-                            let cache_len = self.#cache.len() as u8;
-                            let id = if cache_len == #CACHE_MISS_BIT as u8 {
-                                if let Some((_, id)) = self.#cache.pop_lru() {
-                                    self.#cache.put(#name.to_string(), id);
-                                    id
-                                }
-                                else {
-                                    unreachable!()
-                                }
-                            } else {
-                                self.#cache.put(#name.to_string(), cache_len);
-                                cache_len
-                            };
-                            let cache_id =  #CACHE_MISS_BIT as u8 | id;
-                            #write_size
-                            #encode
-                        }
+                        self.#cache.push(#name)
+                    }
+                };
+                quote! {
+                    let (_id, _new) = #push;
+                    if _new {
+                        let cache_id = #CACHE_MISS_BIT as u8 | _id;
+                        #write_size
+                        #encode
+                    }
+                    else {
+                        let cache_id = _id;
+                        #write_size
                     }
                 }
             }
