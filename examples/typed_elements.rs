@@ -65,8 +65,8 @@ fn main() {
             return channel.nodes[id];
         }
     ")]
-    extern "C" {
-        fn get_node(node: &TypedElements, id: u16) -> Node;
+    unsafe extern "C" {
+        unsafe fn get_node(node: &TypedElements, id: u16) -> Node;
     }
 
     let mut channel1 = Channel::default();
@@ -80,7 +80,9 @@ fn main() {
     channel1.append_child(main, node1);
     channel1.flush();
 
-    console::log_1(&get_node(channel1.js_channel(), 0).into());
+    unsafe {
+        console::log_1(&get_node(channel1.js_channel(), 0));
+    }
 }
 
 #[allow(non_camel_case_types)]
