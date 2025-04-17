@@ -66,7 +66,7 @@ fn main() {
         }
     ")]
     extern "C" {
-        fn get_node(node: &JSChannel, id: u16) -> Node;
+        fn get_node(node: &TypedElements, id: u16) -> Node;
     }
 
     let mut channel1 = Channel::default();

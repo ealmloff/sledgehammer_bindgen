@@ -5,7 +5,15 @@ use std::{
 };
 
 use sledgehammer_bindgen::bindgen;
+use wasm_bindgen::prelude::wasm_bindgen;
+use web_sys::{console, Node};
 use wry::http::Response;
+
+#[wasm_bindgen(module = "examples/typed_elements.js")]
+extern "C" {
+    #[wasm_bindgen]
+    pub type TypedElements;
+}
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
 const INDEX_PATH: &str = "http://dioxus.index.html";
@@ -394,7 +402,7 @@ fn main() -> wry::Result<()> {
                             {}
                             let channel = new RawChannel();
                             function wait_for_request() {{
-                                fetch(new Request("{INDEX_PATH}")) 
+                                fetch(new Request("{INDEX_PATH}"))
                                     .then(response => {{
                                         response.arrayBuffer()
                                             .then(bytes => {{
