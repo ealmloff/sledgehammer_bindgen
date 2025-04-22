@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, ops::Deref, rc::Rc};
+use std::{any::Any, collections::BTreeMap, ops::Deref, rc::Rc};
 
 use quote::{__private::TokenStream as TokenStream2, quote};
 use syn::{Ident, Type};
@@ -137,12 +137,12 @@ impl Encode for EncodeTraitObject {
 
 #[derive(Default)]
 pub struct Encoders {
-    encoders: HashMap<Ident, EncodeTraitObject>,
+    encoders: BTreeMap<Ident, EncodeTraitObject>,
     pub(crate) builder: BindingBuilder,
 }
 
 impl Deref for Encoders {
-    type Target = HashMap<Ident, EncodeTraitObject>;
+    type Target = BTreeMap<Ident, EncodeTraitObject>;
 
     fn deref(&self) -> &Self::Target {
         &self.encoders

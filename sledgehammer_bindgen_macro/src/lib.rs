@@ -57,7 +57,7 @@ use function::FunctionBinding;
 use proc_macro::TokenStream;
 use quote::__private::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use std::{collections::HashSet, ops::Deref};
+use std::{collections::BTreeSet, ops::Deref};
 use syn::spanned::Spanned;
 use syn::{parse::Parse, parse_macro_input, Ident};
 use syn::{parse_quote, Token};
@@ -317,7 +317,7 @@ impl Bindings {
 
         let pre_run_metadata = self.encoders.builder().pre_run_js();
 
-        let all_variables: HashSet<&str> = self
+        let all_variables: BTreeSet<&str> = self
             .functions
             .iter()
             .flat_map(|f| f.variables.iter().map(|s| s.as_str()))
