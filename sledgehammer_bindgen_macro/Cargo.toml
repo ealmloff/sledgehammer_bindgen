@@ -1,6 +1,6 @@
 [package]
 name = "sledgehammer_bindgen_macro"
-version = "0.6.0"
+version = "0.6.1"
 authors = ["Evan Almloff <ealmlof1@stumail.jccc.edu>"]
 edition = "2021"
 description = "Fast batched js bindings"
