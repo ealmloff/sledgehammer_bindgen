@@ -5,7 +5,15 @@ use std::{
 };
 
 use sledgehammer_bindgen::bindgen;
-use wry::http::Response;
+use wasm_bindgen::prelude::wasm_bindgen;
+use web_sys::{console, Node};
+use wry::{http::Response, WebViewBuilder};
+
+#[wasm_bindgen(module = "examples/typed_elements.js")]
+extern "C" {
+    #[wasm_bindgen]
+    pub type TypedElements;
+}
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
 const INDEX_PATH: &str = "http://dioxus.index.html";
@@ -363,28 +371,25 @@ enum Attribute {
 }
 
 fn main() -> wry::Result<()> {
-    use wry::{
-        application::{
-            event::{Event, StartCause, WindowEvent},
-            event_loop::{ControlFlow, EventLoop},
-            window::WindowBuilder,
-        },
-        webview::WebViewBuilder,
+    use tao::{
+        event::{Event, WindowEvent},
+        event_loop::{ControlFlow, EventLoop},
+        window::WindowBuilder,
     };
 
     let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .with_title("Hello World")
-        .build(&event_loop)?;
+    let window = WindowBuilder::new().build(&event_loop).unwrap();
+
     let first_request = Cell::new(true);
-    let _webview = WebViewBuilder::new(window)?
+    let webview = WebViewBuilder::new()
         .with_url(INDEX_PATH)
-        .unwrap()
-        .with_asynchronous_custom_protocol("dioxus".into(), move |_, responder| {
-            if first_request.get() {
-                first_request.set(false);
-                let html = format!(
-                    r#"
+        .with_asynchronous_custom_protocol(
+            "dioxus".into(),
+            move |_webview_id, request, responder| {
+                if first_request.get() {
+                    first_request.set(false);
+                    let html = format!(
+                        r#"
                     <head>
                     </head>
                     <body>
@@ -394,7 +399,7 @@ fn main() -> wry::Result<()> {
                             {}
                             let channel = new RawChannel();
                             function wait_for_request() {{
-                                fetch(new Request("{INDEX_PATH}")) 
+                                fetch(new Request("{INDEX_PATH}"))
                                     .then(response => {{
                                         response.arrayBuffer()
                                             .then(bytes => {{
@@ -411,59 +416,60 @@ fn main() -> wry::Result<()> {
                         </script>
                     </body>
                     "#,
-                    TYPED_JS,
-                    GENERATED_JS.replace("export", "")
-                );
-                responder.respond(
-                    Response::builder()
-                        .header("Access-Control-Allow-Origin", "*")
-                        .header("Content-Type", "text/html")
-                        .body(html.as_bytes().to_vec())
-                        .unwrap(),
-                );
-                return;
-            }
+                        TYPED_JS,
+                        GENERATED_JS.replace("export", "")
+                    );
+                    responder.respond(
+                        Response::builder()
+                            .header("Access-Control-Allow-Origin", "*")
+                            .header("Content-Type", "text/html")
+                            .body(html.as_bytes().to_vec())
+                            .unwrap(),
+                    );
+                    return;
+                }
 
-            let mut channel1 = Channel::default();
-            let main = 0;
-            let node1 = 1;
-            let node2 = 2;
-            for _ in 0..rand::random::<u8>() {
-                channel1.create_element(node1, Element::div as u8);
-                channel1.create_element(node2, Element::span as u8);
-                channel1.append_child(node1, node2);
-                let rand1 = rand::random::<u8>();
-                let rand2 = rand::random::<u8>();
-                channel1.set_text(
-                    node2,
-                    format_args!("{}+{}={}", rand1, rand2, rand1 as usize + rand2 as usize),
-                );
-                channel1.append_child(main, node1);
-            }
+                let mut channel1 = Channel::default();
+                let main = 0;
+                let node1 = 1;
+                let node2 = 2;
+                for _ in 0..rand::random::<u8>() {
+                    channel1.create_element(node1, Element::div as u8);
+                    channel1.create_element(node2, Element::span as u8);
+                    channel1.append_child(node1, node2);
+                    let rand1 = rand::random::<u8>();
+                    let rand2 = rand::random::<u8>();
+                    channel1.set_text(
+                        node2,
+                        format_args!("{}+{}={}", rand1, rand2, rand1 as usize + rand2 as usize),
+                    );
+                    channel1.append_child(main, node1);
+                }
 
-            let data = channel1.export_memory();
-            let data: Vec<_> = data.collect();
-            println!("{:?}", data);
+                let data = channel1.export_memory();
+                let data: Vec<_> = data.collect();
+                println!("{:?}", data);
 
-            channel1.reset();
+                channel1.reset();
 
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(100));
-                responder.respond(Response::new(data));
-            });
-        })
-        .build()?;
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(100));
+                    responder.respond(Response::new(data));
+                });
+            },
+        )
+        .build(&window)
+        .unwrap();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        match event {
-            Event::NewEvents(StartCause::Init) => {}
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => *control_flow = ControlFlow::Exit,
-            _ => (),
+        if let Event::WindowEvent {
+            event: WindowEvent::CloseRequested,
+            ..
+        } = event
+        {
+            *control_flow = ControlFlow::Exit
         }
     });
 }
