@@ -179,15 +179,12 @@ impl Parse for BindgenArgs {
         let mut wasm_bindgen_path: syn::Path = parse_quote!(::sledgehammer_bindgen::wasm_bindgen);
 
         while !input.is_empty() {
-            let ident: Ident = input.parse()?;
+            let Ok(ident) = input.parse::<Ident>() else {
+                return Ok(BindgenArgs { wasm_bindgen_path });
+            };
             if ident == "wasm_bindgen" {
                 input.parse::<Token![=]>()?;
                 wasm_bindgen_path = input.parse()?;
-            } else {
-                return Err(syn::Error::new(
-                    ident.span(),
-                    format!("unknown argument `{}`", ident),
-                ));
             }
 
             // Handle optional trailing comma
