@@ -74,19 +74,6 @@ mod types;
 ///
 /// Some of the code generated uses the `sledgehammer_utils` crate, so you need to add that crate as a dependency.
 ///
-/// ## Macro Arguments
-///
-/// - `wasm_bindgen = path` - Optional. Specifies a custom path to the `wasm_bindgen` crate.
-///   Defaults to `::sledgehammer_bindgen::wasm_bindgen`.
-///
-/// ```rust, ignore
-/// // Using a custom wasm_bindgen path:
-/// #[bindgen(wasm_bindgen = my_crate::wasm_bindgen)]
-/// mod js {
-///     // ...
-/// }
-/// ```
-///
 /// ```rust, ignore
 /// #[bindgen]
 /// mod js {
@@ -162,39 +149,10 @@ mod types;
 /// assert_eq!(get(0), "hello");
 /// ```
 #[proc_macro_attribute]
-pub fn bindgen(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args as BindgenArgs);
+pub fn bindgen(_: TokenStream, input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as Bindings);
-    input.wasm_bindgen_path = args.wasm_bindgen_path;
 
     input.as_tokens().into()
-}
-
-struct BindgenArgs {
-    wasm_bindgen_path: syn::Path,
-}
-
-impl Parse for BindgenArgs {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut wasm_bindgen_path: syn::Path = parse_quote!(::sledgehammer_bindgen::wasm_bindgen);
-
-        while !input.is_empty() {
-            let Ok(ident) = input.parse::<Ident>() else {
-                return Ok(BindgenArgs { wasm_bindgen_path });
-            };
-            if ident == "wasm_bindgen" {
-                input.parse::<Token![=]>()?;
-                wasm_bindgen_path = input.parse()?;
-            }
-
-            // Handle optional trailing comma
-            if input.peek(Token![,]) {
-                input.parse::<Token![,]>()?;
-            }
-        }
-
-        Ok(BindgenArgs { wasm_bindgen_path })
-    }
 }
 
 struct Bindings {
@@ -206,7 +164,6 @@ struct Bindings {
     encoders: Encoders,
     msg_ptr_u32: RustJSU32,
     msg_moved_flag: RustJSFlag,
-    wasm_bindgen_path: syn::Path,
 }
 
 impl Parse for Bindings {
@@ -288,8 +245,6 @@ impl Parse for Bindings {
             msg_ptr_u32,
             msg_moved_flag,
             base,
-            // Default value, will be overwritten by bindgen() with the parsed args
-            wasm_bindgen_path: parse_quote!(::sledgehammer_bindgen::wasm_bindgen),
         })
     }
 }
@@ -462,35 +417,34 @@ impl Bindings {
             #[cfg(feature = "web")]
             {
                 let ty = &self.buffer;
-                let wasm_bindgen = &self.wasm_bindgen_path;
                 let extends = if !self.extends.is_empty() {
                     let classes = &self.extends;
                     quote! {
-                        #[#wasm_bindgen::prelude::wasm_bindgen(extends = #(#classes),*)]
+                        #[wasm_bindgen(extends = #(#classes),*)]
                     }
                 } else {
                     quote!()
                 };
                 let raw_type = &Ident::new(&format!("Raw{}", ty), Span::call_site());
                 quote! {
-                    #[#wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
+                    #[::sledgehammer_bindgen::wasm_bindgen::prelude::wasm_bindgen(inline_js = #all_js)]
                     extern "C" {
                         #extends
                         pub type #raw_type;
 
-                        #[#wasm_bindgen::prelude::wasm_bindgen(constructor)]
+                        #[wasm_bindgen(constructor)]
                         fn new(metadata_ptr: u32) -> #raw_type;
 
-                        #[#wasm_bindgen::prelude::wasm_bindgen(method)]
+                        #[wasm_bindgen(method)]
                         fn run(this: &#raw_type);
 
-                        #[#wasm_bindgen::prelude::wasm_bindgen(method)]
+                        #[wasm_bindgen(method)]
                         #[doc = concat!("Runs the serialized message provided")]
                         #[doc = concat!("To create a serialized message, use the [`", stringify!(#ty), "`]::to_bytes` method")]
                         pub fn run_from_buffer(this: &#raw_type, buffer: &[u8]);
 
-                        #[#wasm_bindgen::prelude::wasm_bindgen(method)]
-                        fn update_memory(this: &#raw_type, memory: #wasm_bindgen::JsValue);
+                        #[wasm_bindgen(method)]
+                        fn update_memory(this: &#raw_type, memory: ::sledgehammer_bindgen::wasm_bindgen::JsValue);
                     }
                 }
             }
@@ -538,7 +492,6 @@ impl Bindings {
         };
 
         let ty = &self.buffer;
-        let wasm_bindgen = &self.wasm_bindgen_path;
         let states = self.encoders.iter().map(|(_, e)| {
             let ty = &e.rust_type();
             let ident = &e.rust_ident();
@@ -713,7 +666,7 @@ impl Bindings {
                         // we need to update the memory if the memory has grown
                         if new_mem_size != self.last_mem_size {
                             self.last_mem_size = new_mem_size;
-                            self.js_channel.update_memory(#wasm_bindgen::memory());
+                            self.js_channel.update_memory(::sledgehammer_bindgen::wasm_bindgen::memory());
                             #(#memory_moved_rust)*
                         }
 
