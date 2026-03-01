@@ -16,11 +16,12 @@ sledgehammer_bindgen_macro = { path = "sledgehammer_bindgen_macro", version = "0
 wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
-rand = "0.8.5"
-getrandom = { version = "0.2", features = ["js"] }
-sledgehammer_utils = "0.3.0"
+rand = "0.9.0"
+getrandom = "0.3"
+sledgehammer_utils = "0.3"
 wasm-bindgen = "0.2"
-wry = { version = "0.33.0", features = ["devtools"] }
+wry = { version = "0.51", features = ["devtools"] }
+tao = "0.33"
 
 [dev-dependencies.web-sys]
 version = "0.3"
